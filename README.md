@@ -55,7 +55,7 @@ python3 -c "import sqlite3; conn=sqlite3.connect('/var/lib/os400/qsys.db'); c=co
 
 # Things I would like to do
 
-Create QCMD to have jobs run interactively, displaying a QINTER in WRKACTJOB. (These would run at the OS default nice values)
+Create QCMD to have jobs run interactively, displaying as QINTER jobs in WRKACTJOB. (These would run at the OS default nice values)
 
 Have SBMJOB run the BATCH jobs at a lower nice value, though able to change the priority to renice the jobs
 
