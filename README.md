@@ -60,3 +60,7 @@ Create QCMD to have jobs run interactively, displaying a QINTER in WRKACTJOB. (T
 Have SBMJOB run the BATCH jobs at a lower nice value, though able to change the priority to renice the jobs
 
 The main challenge (I had with Ubuntu anyway) was the system limits on letting me renice my jobs. I will play with this when I have the time.
+
+# Disclaimer 
+
+This idea came to me and I did this when I was delirious with a bad cold/flu. So if you decide that you want to run this for anything mission critical or for serious production workloads. You do so at your own risk. 
