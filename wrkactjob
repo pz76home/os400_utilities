@@ -80,12 +80,15 @@ def update_and_get_jobs():
     return updated_jobs
 
 def kill_job(job_num, pid):
-    """Executes Option 4 (End Job) by killing the Linux PID."""
+    """Executes Option 4 (End Job IMMEDIATELY) by sending a SIGKILL."""
     if pid > 0:
         try:
-            os.kill(pid, 15) # SIGTERM
+            # Upgrade to Signal 9 (SIGKILL) so processes cannot ignore or block it
+            os.kill(pid, 9) 
         except OSError:
+            # Catch errors if process is already dead or managed by another user profile
             pass
+            
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("UPDATE active_jobs SET status = '*OUTQ' WHERE job_number = ?", (job_num,))
@@ -106,7 +109,7 @@ def view_spool(stdscr, job_num):
         lines = ["CPF2204: Spool file not found or not generated yet."]
 
     current_line = 0
-    stdscr.nodelay(False) # Halt asynchronous ticking while reading logs
+    stdscr.nodelay(False) 
     
     while True:
         stdscr.clear()
@@ -140,7 +143,7 @@ def draw_screen(stdscr):
     curses.init_pair(4, curses.COLOR_CYAN, -1)    # Dynamic attributes labels
     
     stdscr.nodelay(True)
-    stdscr.timeout(1000) # Poll the database/PIDs every 1 second
+    stdscr.timeout(1000) 
     
     inputs = {} 
     current_row_idx = 0  # Locks cursor row position between ticks
@@ -220,7 +223,7 @@ def draw_screen(stdscr):
         elif ch in (curses.KEY_F5, ord('r'), ord('R')):
             continue
             
-        # --- ARROW NAVIGATION (Modifies persistent tracker indices) ---
+        # --- ARROW NAVIGATION ---
         elif ch == curses.KEY_UP:
             if current_row_idx > 0:
                 current_row_idx -= 1

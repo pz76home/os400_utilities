@@ -18,6 +18,7 @@ Make it executable with chmod +x WRKACTJOB, and place it in a shared directory l
 
 # 4. Example usage
 SBMJOB 'CMD(sleep 15) JOB(QUICKJOB)'
+SBMJOB 'CMD(ping -c 30 127.0.0.1) JOB(NETPING)'
 
 
 # 4. Troubleshooting jobs submitted by SBMJOB 
