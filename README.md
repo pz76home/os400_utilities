@@ -32,6 +32,9 @@ sudo chmod g+s /var/lib/os400 /var/lib/os400/splf
 
 
 # 4. Place python scripts in /usr/local/bin and chmod them to be executable
+
+Clone the this git repo or manually copy and paste the python code of the commands.
+
 Make it executable with chmod +x SBMJOB, and place it in a shared directory like /usr/local/bin/SBMJOB so all users can invoke it.
 
 Make it executable with chmod +x WRKACTJOB, and place it in a shared directory like /usr/local/bin/WRKACTJOB so all users can invoke it.
@@ -43,6 +46,8 @@ Make it executable with chmod +x WRKSBMJOB, and place it in a shared directory l
 SBMJOB 'CMD(sleep 15) JOB(QUICKJOB)'
 
 SBMJOB 'CMD(ping -c 30 127.0.0.1) JOB(NETPING)'
+
+SBMJOB 'CMD(sha256sum /dev/zero) JOB(CPULOOP)'
 
 
 # 4. Troubleshooting jobs submitted by SBMJOB 
