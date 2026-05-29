@@ -57,7 +57,7 @@ def update_and_get_jobs():
         
         if status == '*RUNNING' and pid > 0:
             try:
-                os.kill(pid, 0) # Check if Linux process is alive
+                os.kill(pid, 0)
                 cpu = get_cpu_usage(pid)
             except OSError:
                 status = '*OUTQ'
@@ -83,7 +83,7 @@ def kill_job(job_num, pid):
     """Executes Option 4 (End Job) by killing the Linux PID."""
     if pid > 0:
         try:
-            os.kill(pid, 15) # SIGTERM
+            os.kill(pid, 15)
         except OSError:
             pass
     conn = sqlite3.connect(DB_PATH)
@@ -93,7 +93,7 @@ def kill_job(job_num, pid):
     conn.close()
 
 def view_spool(stdscr, job_num):
-    """Executes Option 5 to view the spooled stdout text file (with F12/Q support)."""
+    """Executes Option 5 to view the spooled stdout text file."""
     spool_path = f"/var/lib/os400/splf/JOB_{job_num:06d}.txt"
     stdscr.clear()
     stdscr.refresh()
@@ -106,18 +106,16 @@ def view_spool(stdscr, job_num):
         lines = ["CPF2204: Spool file not found or not generated yet."]
 
     current_line = 0
-    stdscr.nodelay(False) # Wait for keystrokes in viewer mode
+    stdscr.nodelay(False)
     
     while True:
         stdscr.clear()
         height, width = stdscr.getmaxyx()
         
-        # Header
         stdscr.addstr(0, 2, f"Display Spooled File: JOB_{job_num:06d}.txt", curses.color_pair(2))
         stdscr.addstr(1, 2, "F12=Cancel / Return to WRKACTJOB", curses.color_pair(1))
         stdscr.hline(2, 0, '-', width)
         
-        # Render contents page
         for i in range(height - 4):
             line_idx = current_line + i
             if line_idx < len(lines):
@@ -126,7 +124,8 @@ def view_spool(stdscr, job_num):
         stdscr.refresh()
         ch = stdscr.getch()
         
-        if ch in (curses.KEY_F12, ord('q'), ord('Q'), ord('c'), ord('C')):
+        # F12, Q, or Escape to exit viewer
+        if ch in (curses.KEY_F12, ord('q'), ord('Q'), ord('c'), ord('C'), 27):
             break
         elif ch == curses.KEY_DOWN and current_line < len(lines) - (height - 4):
             current_line += 1
@@ -134,16 +133,14 @@ def view_spool(stdscr, job_num):
             current_line -= 1
 
 def draw_screen(stdscr):
-    # Setup standard IBM 5250 Terminal Theme Colors (Green & White on black background)
     curses.start_color()
     curses.use_default_colors()
-    curses.init_pair(1, curses.COLOR_GREEN, -1)   # Primary Labels / Active elements
-    curses.init_pair(2, curses.COLOR_WHITE, -1)   # Core Data fields
-    curses.init_pair(4, curses.COLOR_CYAN, -1)    # Instruction lines
+    curses.init_pair(1, curses.COLOR_GREEN, -1)   
+    curses.init_pair(2, curses.COLOR_WHITE, -1)   
+    curses.init_pair(4, curses.COLOR_CYAN, -1)    
     
-    # Configure non-blocking key reads for background asynchronous refresh
     stdscr.nodelay(True)
-    stdscr.timeout(1000) # Re-scans DB and UI state once every 1 second automatically
+    stdscr.timeout(1000) 
     
     inputs = {} 
     
@@ -175,7 +172,7 @@ def draw_screen(stdscr):
         new_inputs = {}
         for idx, job in enumerate(jobs):
             if row >= height - 3: 
-                break # Hard prevent bounds crashes on small windows
+                break 
                 
             opt_val = inputs.get(idx, "")
             
@@ -195,11 +192,10 @@ def draw_screen(stdscr):
             
         inputs = { k: v['val'] for k, v in new_inputs.items() }
         
-        # 4. Legend Bar (Bottom Command Function Keys Mapping)
-        legend_str = "F3=Exit   F4=Prompt   F5=Refresh   F12=Cancel"
+        # 4. Streamlined Legend Bar
+        legend_str = "F3=Exit   F5=Refresh   F12=Cancel"
         stdscr.addstr(height - 2, 2, legend_str, curses.color_pair(1))
         
-        # Cursor positioning strategy (lock to first available user row input option)
         if new_inputs:
             stdscr.move(new_inputs[0]['y'], new_inputs[0]['x'])
         else:
@@ -207,18 +203,18 @@ def draw_screen(stdscr):
             
         stdscr.refresh()
         
-        # 5. Keystroke Listener and Event Decoders
+        # 5. Fixed Keystroke Listener
         ch = stdscr.getch()
         
-        # --- F3: EXIT APPLICATION ---
-        if ch in (curses.KEY_F3, ord('q'), ord('Q')):
+        # --- EXIT COMMANDS (F3, q, Q, x, X, or ESCAPE) ---
+        if ch in (curses.KEY_F3, ord('q'), ord('Q'), ord('x'), ord('X'), 27):
             break
             
-        # --- F5: MANUAL REFRESH ---
+        # --- MANUAL REFRESH (F5, r, R) ---
         elif ch in (curses.KEY_F5, ord('r'), ord('R')):
             continue
             
-        # --- ARROW NAVIGATION KEYS ---
+        # --- ARROW NAVIGATION ---
         elif ch == curses.KEY_UP:
             focused_y, focused_x = curses.getsyx()
             if focused_y > 9:
@@ -227,27 +223,8 @@ def draw_screen(stdscr):
             focused_y, focused_x = curses.getsyx()
             if focused_y < 9 + len(jobs) - 1:
                 stdscr.move(focused_y + 1, focused_x)
-                
-        # --- F4: CONTEXTUAL PROMPT POPUP ---
-        elif ch in (curses.KEY_F4, ord('p'), ord('P')):
-            focused_y, focused_x = curses.getsyx()
-            for idx, info in new_inputs.items():
-                if info['y'] == focused_y:
-                    stdscr.clear()
-                    stdscr.addstr(2, 5, f"--- Select Option for Job: {info['job']['name']} ---", curses.color_pair(1))
-                    stdscr.addstr(4, 7, "4 = End Job (Kills active process via SIGTERM)", curses.color_pair(2))
-                    stdscr.addstr(5, 7, "5 = Work with Spool File (Inspects standard output log)", curses.color_pair(2))
-                    stdscr.addstr(8, 5, "Press F12 / Enter to return...", curses.color_pair(4))
-                    stdscr.refresh()
-                    
-                    stdscr.nodelay(False) # Halt refresh loop execution during active prompt modal
-                    while True:
-                        popup_ch = stdscr.getch()
-                        if popup_ch in (curses.KEY_F12, 10, ord('c'), ord('C')):
-                            break
-                    stdscr.nodelay(True) # Re-enable async task timers
             
-        # --- ACCEPTING OPTION COMMAND CODES ---
+        # --- ACCEPTING CODES ---
         elif ch in (ord('4'), ord('5'), ord(' ')):
             focused_y, focused_x = curses.getsyx()
             for idx, info in new_inputs.items():
@@ -255,7 +232,7 @@ def draw_screen(stdscr):
                     char_str = " " if ch == ord(' ') else chr(ch)
                     inputs[idx] = char_str.strip()
                     
-        # --- ENTER KEY: EXECUTE SUBMISSIONS QUEUE ---
+        # --- ENTER KEY TO EXECUTE ---
         elif ch == 10: 
             for idx, info in new_inputs.items():
                 val = inputs.get(idx, "")
