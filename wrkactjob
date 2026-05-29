@@ -7,30 +7,62 @@ import time
 
 DB_PATH = "/var/lib/os400/qsys.db"
 
+# Global cache to store the PREVIOUS snapshot of ticks for delta calculations
+# Format: { pid: (last_total_ticks, last_sample_time) }
+CPU_HISTORY = {}
+
 def get_cpu_usage(pid):
-    """Calculates rough CPU usage for a PID using /proc."""
+    """Calculates real-time CPU usage over a 1-second interval using /proc delta matching."""
     if pid <= 0:
         return 0.0
-    try:
-        with open("/proc/uptime", "r") as f:
-            uptime = float(f.readline().split()[0])
         
+    global CPU_HISTORY
+    current_time = time.time()
+    
+    try:
+        # Read the target process stats safely
         with open(f"/proc/{pid}/stat", "r") as f:
-            stat = f.readline().split()
+            stat_content = f.read()
             
-        utime = float(stat[13])
-        stime = float(stat[14])
-        starttime = float(stat[21])
+        # FIX: Handle commands with spaces by cutting out the filename wrapper (e.g. "(my command)")
+        # This keeps our array index counts perfectly bulletproof
+        right_parenthesis = stat_content.rfind(')')
+        stat_line = stat_content[right_parenthesis + 2:].split()
+        
+        # In a cleaned line, index counts shift left by 2 positions:
+        # Index 11 = utime (user mode ticks)
+        # Index 12 = stime (kernel mode ticks)
+        utime = float(stat_line[11])
+        stime = float(stat_line[12])
+        total_ticks = utime + stime
         
         clk_tck = os.sysconf(os.sysconf_names['SC_CLK_TCK'])
         
-        total_time = (utime + stime) / clk_tck
-        seconds = uptime - (starttime / clk_tck)
+        # If this is the first time we see the process, log it and return 0.0 for this frame
+        if pid not in CPU_HISTORY:
+            CPU_HISTORY[pid] = (total_ticks, current_time)
+            return 0.0
+            
+        # Calculate how many ticks passed since our last 1-second monitor refresh
+        prev_ticks, prev_time = CPU_HISTORY[pid]
+        time_delta = current_time - prev_time
+        tick_delta = total_ticks - prev_ticks
         
-        if seconds > 0:
-            return round((total_time / seconds) * 100, 1)
-    except (FileNotFoundError, IndexError, ZeroDivisionError):
-        pass
+        # Save current snapshot for the next refresh interval tick
+        CPU_HISTORY[pid] = (total_ticks, current_time)
+        
+        if time_delta > 0:
+            # Convert tick delta to seconds, divide by time delta, multiply for percentage
+            cpu_pct = (tick_delta / clk_tck) / time_delta * 100.0
+            
+            # Cap it logically based on multi-core environments
+            return round(max(0.0, cpu_pct), 1)
+            
+    except (FileNotFoundError, IndexError, ValueError):
+        # Clean up stale data if the process died
+        if pid in CPU_HISTORY:
+            del CPU_HISTORY[pid]
+            
     return 0.0
 
 def update_and_get_jobs():
@@ -50,6 +82,10 @@ def update_and_get_jobs():
     jobs = cursor.fetchall()
     
     updated_jobs = []
+    
+    # Track which PIDs are still active to clean up the CPU cache later
+    active_pids = set()
+    
     for job in jobs:
         job_num, job_name, user, pid, status, command = job
         padded_num = f"{job_num:06d}"
@@ -59,6 +95,7 @@ def update_and_get_jobs():
             try:
                 os.kill(pid, 0) # Check if Linux process is alive
                 cpu = get_cpu_usage(pid)
+                active_pids.add(pid)
             except OSError:
                 status = '*OUTQ'
                 cursor.execute("UPDATE active_jobs SET status = '*OUTQ' WHERE job_number = ?", (job_num,))
@@ -76,6 +113,12 @@ def update_and_get_jobs():
                 'cmd': command
             })
             
+    # Purge old dead metrics out of memory cache
+    global CPU_HISTORY
+    for stale_pid in list(CPU_HISTORY.keys()):
+        if stale_pid not in active_pids:
+            del CPU_HISTORY[stale_pid]
+            
     conn.close()
     return updated_jobs
 
@@ -83,13 +126,10 @@ def kill_job(job_num, pid):
     """Executes Option 4 (End Job) by killing the target process group."""
     if pid > 0:
         try:
-            # 1. Look up the process group ID for this PID
             pgid = os.getpgid(pid)
-            # 2. Send SIGKILL to the negative PGID to wipe out the parent and all spawned children
             os.kill(-pgid, 9)
         except OSError:
             try:
-                # Fallback: If process group lookup fails, kill the solo PID directly
                 os.kill(pid, 9)
             except OSError:
                 pass
@@ -140,18 +180,17 @@ def view_spool(stdscr, job_num):
             current_line -= 1
 
 def draw_screen(stdscr):
-    # Setup Terminal Colors (Classic IBM Green Screen Matrix Style)
     curses.start_color()
     curses.use_default_colors()
-    curses.init_pair(1, curses.COLOR_GREEN, -1)   # Primary Framework Elements
-    curses.init_pair(2, curses.COLOR_WHITE, -1)   # Text variables / data entries
-    curses.init_pair(4, curses.COLOR_CYAN, -1)    # Dynamic attributes labels
+    curses.init_pair(1, curses.COLOR_GREEN, -1)   
+    curses.init_pair(2, curses.COLOR_WHITE, -1)   
+    curses.init_pair(4, curses.COLOR_CYAN, -1)    
     
     stdscr.nodelay(True)
     stdscr.timeout(1000) 
     
     inputs = {} 
-    current_row_idx = 0  # Locks cursor row position between ticks
+    current_row_idx = 0  
     
     while True:
         stdscr.clear()
@@ -159,11 +198,9 @@ def draw_screen(stdscr):
         
         jobs = update_and_get_jobs()
         
-        # Enforce bounds alignment on current active tracker indexes
         if current_row_idx >= len(jobs):
             current_row_idx = max(0, len(jobs) - 1)
         
-        # 1. Header Layout
         stdscr.addstr(0, 2, "Work with Active Jobs", curses.color_pair(1))
         stdscr.addstr(0, width - 24, "OS400-LINUX SYSTEM", curses.color_pair(1))
         
@@ -176,11 +213,9 @@ def draw_screen(stdscr):
         stdscr.addstr(4, 2, "Type options, press Enter.", curses.color_pair(1))
         stdscr.addstr(5, 4, "4=End job   5=Work with spool file", curses.color_pair(4))
         
-        # 2. Main Columns Line Header
         stdscr.addstr(7, 2, "Opt  Job/Subsys  User        Type    CPU %  Status    Command", curses.color_pair(1))
         stdscr.hline(8, 0, '-', width)
         
-        # 3. Dynamic Rows Loop
         row = 9
         new_inputs = {}
         for idx, job in enumerate(jobs):
@@ -205,11 +240,9 @@ def draw_screen(stdscr):
             
         inputs = { k: v['val'] for k, v in new_inputs.items() }
         
-        # 4. Streamlined Legend Bar
         legend_str = "F3=Exit   F5=Refresh   F12=Cancel"
         stdscr.addstr(height - 2, 2, legend_str, curses.color_pair(1))
         
-        # Explicit Cursor Placement (Moves exactly where the selection index points)
         if new_inputs and current_row_idx in new_inputs:
             stdscr.move(new_inputs[current_row_idx]['y'], new_inputs[current_row_idx]['x'])
         else:
@@ -217,32 +250,22 @@ def draw_screen(stdscr):
             
         stdscr.refresh()
         
-        # 5. Keystroke Listener Loop
         ch = stdscr.getch()
         
-        # --- EXIT EVENT HANDLERS ---
         if ch in (curses.KEY_F3, ord('q'), ord('Q'), ord('x'), ord('X'), 27):
             break
-            
-        # --- MANUAL TICK TRIGGER REFRESH ---
         elif ch in (curses.KEY_F5, ord('r'), ord('R')):
             continue
-            
-        # --- ARROW NAVIGATION ---
         elif ch == curses.KEY_UP:
             if current_row_idx > 0:
                 current_row_idx -= 1
         elif ch == curses.KEY_DOWN:
             if current_row_idx < len(jobs) - 1:
                 current_row_idx += 1
-            
-        # --- CAPTURING COMMAND CODES ---
         elif ch in (ord('4'), ord('5'), ord(' ')):
             if jobs: 
                 char_str = " " if ch == ord(' ') else chr(ch)
                 inputs[current_row_idx] = char_str.strip()
-                    
-        # --- ENTER KEY EXECUTOR SUBMITTER ---
         elif ch == 10: 
             for idx, info in new_inputs.items():
                 val = inputs.get(idx, "")
