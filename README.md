@@ -3,10 +3,17 @@
 sudo mkdir -p /var/lib/os400/splf
 
 # 2. Assign ownership to a shared access group (e.g., 'os400' or 'users')
-sudo chown -R root:users /var/lib/os400
+sudo chown -R root:users /var/lib/os400  (Ubuntu)
+
+sudo groupadd os400 (RHEL)
+
+sudo chown -R root:os400 /var/lib/os400  (RHEL)
+
+sudo usermod -G os400 <username> (RHEL)
 
 # 3. Apply SGID and group read/write privileges
-sudo chmod -R 775 /var/lib/os400
+sudo chmod -R 775 /var/lib/os400 
+
 sudo chmod g+s /var/lib/os400 /var/lib/os400/splf
 
 
@@ -20,6 +27,7 @@ Make it executable with chmod +x WRKSBMJOB, and place it in a shared directory l
 
 # 4. Example usage
 SBMJOB 'CMD(sleep 15) JOB(QUICKJOB)'
+
 SBMJOB 'CMD(ping -c 30 127.0.0.1) JOB(NETPING)'
 
 
