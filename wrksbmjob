@@ -21,7 +21,6 @@ def update_and_get_submitted_jobs():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # Filter strictly by the current logged-in user session
     cursor.execute("""
         SELECT job_number, job_name, user, pid, status, command 
         FROM active_jobs 
@@ -61,9 +60,8 @@ def purge_job_and_spool(job_num, pid, status):
     """Executes Option 4 (Delete). Explicitly blocks deletion if the job is 
     actively running, returning an error message string.
     """
-    # Safeguard: Do not allow deletion if the job is currently running
     if status == '*RUNNING':
-        return "CPF1338: Job is currently running and cannot be deleted."
+        return f"CPF1338: Job {job_num:06d} is currently running and cannot be deleted."
 
     # Safely remove the physical spool file from disk
     spool_path = f"/var/lib/os400/splf/JOB_{job_num:06d}.txt"
@@ -71,7 +69,7 @@ def purge_job_and_spool(job_num, pid, status):
         try:
             os.remove(spool_path)
         except OSError:
-            pass # Suppress permission or filesystem errors safely
+            pass 
             
     # Purge the job entry completely from the SQLite architecture
     conn = sqlite3.connect(DB_PATH)
@@ -98,112 +96,140 @@ def view_spool(stdscr, job_num):
     stdscr.nodelay(False) 
     
     while True:
-        stdscr.clear()
-        height, width = stdscr.getmaxyx()
-        
-        stdscr.addstr(0, 2, f"Display Spooled File: JOB_{job_num:06d}.txt", curses.color_pair(2))
-        stdscr.addstr(1, 2, "F12=Cancel / Return to WRKSBMJOB", curses.color_pair(1))
-        stdscr.hline(2, 0, '-', width)
-        
-        for i in range(height - 4):
-            line_idx = current_line + i
-            if line_idx < len(lines):
-                stdscr.addstr(3 + i, 2, lines[line_idx][:width-4].rstrip())
-                
-        stdscr.refresh()
+        try:
+            stdscr.clear()
+            height, width = stdscr.getmaxyx()
+            
+            stdscr.addstr(0, 2, f"Display Spooled File: JOB_{job_num:06d}.txt", curses.color_pair(2))
+            stdscr.addstr(1, 2, "F12=Cancel / Return to WRKSBMJOB", curses.color_pair(1))
+            stdscr.hline(2, 0, '-', width)
+            
+            for i in range(height - 4):
+                line_idx = current_line + i
+                if line_idx < len(lines):
+                    stdscr.addstr(3 + i, 2, lines[line_idx][:width-4].rstrip())
+                    
+            stdscr.refresh()
+        except curses.error:
+            pass
+
         ch = stdscr.getch()
-        
         if ch in (curses.KEY_F12, ord('q'), ord('Q'), ord('c'), ord('C'), 27):
             break
-        elif ch == curses.KEY_DOWN and current_line < len(lines) - (height - 4):
-            current_line += 1
-        elif ch == curses.KEY_UP and current_line > 0:
-            current_line -= 1
+        elif ch in (curses.KEY_DOWN, curses.KEY_NPAGE):
+            step = (height - 4) if ch == curses.KEY_NPAGE else 1
+            if current_line < len(lines) - (height - 4):
+                current_line = min(len(lines) - (height - 4), current_line + step)
+        elif ch in (curses.KEY_UP, curses.KEY_PPAGE):
+            step = (height - 4) if ch == curses.KEY_PPAGE else 1
+            if current_line > 0:
+                current_line = max(0, current_line - step)
 
 def draw_screen(stdscr):
     curses.start_color()
     curses.use_default_colors()
     curses.init_pair(1, curses.COLOR_GREEN, -1)   
     curses.init_pair(2, curses.COLOR_WHITE, -1)   
-    curses.init_pair(3, curses.COLOR_RED, -1)     # Red for error handling alerts
+    curses.init_pair(3, curses.COLOR_RED, -1)     
     curses.init_pair(4, curses.COLOR_CYAN, -1)    
     
     stdscr.nodelay(True)
     stdscr.timeout(1000) 
     
-    inputs = {} 
+    # CRITICAL FIX: Track inputs by UNIQUE job number, completely decoupled from visual arrays
+    pending_options = {} 
     current_row_idx = 0  
-    error_msg = "" # Keeps track of active error text
+    scroll_top = 0      
+    error_msg = "" 
     
     while True:
-        stdscr.clear()
-        height, width = stdscr.getmaxyx()
-        
-        jobs = update_and_get_submitted_jobs()
-        
-        if current_row_idx >= len(jobs):
-            current_row_idx = max(0, len(jobs) - 1)
-        
-        # UI Header matching classical green-screen OS/400 aesthetics
-        stdscr.addstr(0, 2, "Work with Submitted Jobs", curses.color_pair(1))
-        stdscr.addstr(0, width - 24, "OS400-LINUX SYSTEM", curses.color_pair(1))
-        
-        curr_time = time.strftime("%Y-%m-%d  %H:%M:%S")
-        stdscr.addstr(1, width - 24, curr_time, curses.color_pair(2))
-        
-        stdscr.addstr(2, 2, f"User: {CURRENT_USER:<10}", curses.color_pair(1))
-        
-        stdscr.addstr(4, 2, "Type options, press Enter.", curses.color_pair(1))
-        stdscr.addstr(5, 4, "4=Delete/Purge   5=Display spool file", curses.color_pair(4))
-        
-        stdscr.addstr(7, 2, "Opt  Job Number  Job/Subsys  User        Status    Command", curses.color_pair(1))
-        stdscr.hline(8, 0, '-', width)
-        
-        row = 9
-        new_inputs = {}
-        for idx, job in enumerate(jobs):
-            if row >= height - 4: # Save extra lines at the bottom for errors
-                break 
+        try:
+            stdscr.clear()
+            height, width = stdscr.getmaxyx()
+            
+            jobs = update_and_get_submitted_jobs()
+            
+            if current_row_idx >= len(jobs):
+                current_row_idx = max(0, len(jobs) - 1)
+            
+            max_jobs_per_page = max(1, height - 12)
+            
+            # Recalculate sliding window boundaries
+            if current_row_idx < scroll_top:
+                scroll_top = current_row_idx
+            elif current_row_idx >= scroll_top + max_jobs_per_page:
+                scroll_top = current_row_idx - max_jobs_per_page + 1
                 
-            opt_val = inputs.get(idx, "")
+            if scroll_top > max(0, len(jobs) - max_jobs_per_page):
+                scroll_top = max(0, len(jobs) - max_jobs_per_page)
+
+            # Draw OS/400 Header Standard Layout
+            stdscr.addstr(0, 2, "Work with Submitted Jobs", curses.color_pair(1))
+            stdscr.addstr(0, width - 24, "OS400-LINUX SYSTEM", curses.color_pair(1))
             
-            stdscr.addstr(row, 2, "[ ]", curses.color_pair(1))
-            if opt_val:
-                stdscr.addstr(row, 3, opt_val, curses.color_pair(2))
+            curr_time = time.strftime("%Y-%m-%d  %H:%M:%S")
+            stdscr.addstr(1, width - 24, curr_time, curses.color_pair(2))
+            stdscr.addstr(2, 2, f"User: {CURRENT_USER:<10}", curses.color_pair(1))
+            
+            stdscr.addstr(4, 2, "Type options, press Enter.", curses.color_pair(1))
+            stdscr.addstr(5, 4, "4=Delete/Purge   5=Display spool file", curses.color_pair(4))
+            
+            stdscr.addstr(7, 2, "Opt  Job Number  Job/Subsys  User        Status    Command", curses.color_pair(1))
+            stdscr.hline(8, 0, '-', width)
+            
+            # Pagination Flags
+            if len(jobs) > max_jobs_per_page:
+                if scroll_top + max_jobs_per_page < len(jobs):
+                    stdscr.addstr(7, width - 12, "More...", curses.color_pair(4))
+                else:
+                    stdscr.addstr(7, width - 12, "Bottom", curses.color_pair(4))
+
+            row = 9
+            cursor_coords = None
+            visible_jobs = jobs[scroll_top : scroll_top + max_jobs_per_page]
+            
+            for idx, job in enumerate(visible_jobs):
+                absolute_idx = scroll_top + idx
                 
-            stdscr.addstr(row, 7, f"{job['num']:12}", curses.color_pair(2))
-            stdscr.addstr(row, 20, f"{job['name'][:10]:12}", curses.color_pair(2))
-            stdscr.addstr(row, 32, f"{job['user'][:10]:12}", curses.color_pair(2))
+                # Fetch options from database key rather than array screen rows
+                opt_val = pending_options.get(job['raw_num'], "")
+                
+                stdscr.addstr(row, 2, "[ ]", curses.color_pair(1))
+                if opt_val:
+                    stdscr.addstr(row, 3, opt_val, curses.color_pair(2))
+                    
+                stdscr.addstr(row, 7, f"{job['num']:12}", curses.color_pair(2))
+                stdscr.addstr(row, 20, f"{job['name'][:10]:12}", curses.color_pair(2))
+                stdscr.addstr(row, 32, f"{job['user'][:10]:12}", curses.color_pair(2))
+                
+                status_color = curses.color_pair(1) if job['status'] == '*RUNNING' else curses.color_pair(2)
+                stdscr.addstr(row, 44, f"{job['status']:10}", status_color)
+                stdscr.addstr(row, 56, f"{job['cmd'][:width-58]}", curses.color_pair(2))
+                
+                if absolute_idx == current_row_idx:
+                    cursor_coords = (row, 3)
+                    
+                row += 1
+                
+            if error_msg:
+                stdscr.addstr(height - 3, 2, error_msg, curses.color_pair(3))
             
-            # Dynamic color coding for statuses
-            status_color = curses.color_pair(1) if job['status'] == '*RUNNING' else curses.color_pair(2)
-            stdscr.addstr(row, 44, f"{job['status']:10}", status_color)
+            legend_str = "F3=Exit   F5=Refresh   F12=Cancel   PageUp/Dn=Roll"
+            stdscr.addstr(height - 2, 2, legend_str, curses.color_pair(1))
             
-            stdscr.addstr(row, 56, f"{job['cmd'][:width-58]}", curses.color_pair(2))
-            
-            new_inputs[idx] = { 'val': opt_val, 'y': row, 'x': 3, 'job': job }
-            row += 1
-            
-        inputs = { k: v['val'] for k, v in new_inputs.items() }
-        
-        # Render error feedback message bar if populated
-        if error_msg:
-            stdscr.addstr(height - 3, 2, error_msg, curses.color_pair(3))
-        
-        legend_str = "F3=Exit   F5=Refresh   F12=Cancel"
-        stdscr.addstr(height - 2, 2, legend_str, curses.color_pair(1))
-        
-        if new_inputs and current_row_idx in new_inputs:
-            stdscr.move(new_inputs[current_row_idx]['y'], new_inputs[current_row_idx]['x'])
-        else:
-            stdscr.move(height - 2, 2)
-            
-        stdscr.refresh()
+            if cursor_coords:
+                stdscr.move(cursor_coords[0], cursor_coords[1])
+            else:
+                if height > 2:
+                    stdscr.move(height - 2, 2)
+                    
+            stdscr.refresh()
+        except curses.error:
+            pass
+
         ch = stdscr.getch()
-        
-        # Reset error message on user input interaction
         if ch != -1:
-            error_msg = ""
+            error_msg = "" # Wipe out error message notifications on interaction
         
         if ch in (curses.KEY_F3, ord('q'), ord('Q'), ord('x'), ord('X'), 27):
             break
@@ -215,26 +241,40 @@ def draw_screen(stdscr):
         elif ch == curses.KEY_DOWN:
             if current_row_idx < len(jobs) - 1:
                 current_row_idx += 1
+        elif ch == curses.KEY_PPAGE: 
+            if current_row_idx > 0:
+                current_row_idx = max(0, current_row_idx - max_jobs_per_page)
+        elif ch == curses.KEY_NPAGE: 
+            if current_row_idx < len(jobs) - 1:
+                current_row_idx = min(len(jobs) - 1, current_row_idx + max_jobs_per_page)
         elif ch in (ord('4'), ord('5'), ord(' ')):
-            if jobs: 
+            if jobs and current_row_idx < len(jobs): 
+                target_job = jobs[current_row_idx]
                 char_str = " " if ch == ord(' ') else chr(ch)
-                inputs[current_row_idx] = char_str.strip()
+                
+                if char_str.strip() == "":
+                    pending_options.pop(target_job['raw_num'], None)
+                else:
+                    pending_options[target_job['raw_num']] = char_str
         elif ch == 10: # Enter Key
-            for idx, info in new_inputs.items():
-                val = inputs.get(idx, "")
-                if val == "4":
-                    err = purge_job_and_spool(
-                        info['job']['raw_num'], 
-                        info['job']['pid'], 
-                        info['job']['status']
-                    )
-                    if err:
-                        error_msg = err
-                elif val == "5":
-                    view_spool(stdscr, info['job']['raw_num'])
-                    stdscr.nodelay(True)
-                    stdscr.timeout(1000)
-            inputs = {}
+            # Process all accumulated commands across all pages in a single loop
+            for job_num, val in list(pending_options.items()):
+                # Locate the job entry safely inside the primary array
+                target_job = next((j for j in jobs if j['raw_num'] == job_num), None)
+                if target_job and val in ("4", "5"):
+                    if val == "4":
+                        err = purge_job_and_spool(
+                            target_job['raw_num'], 
+                            target_job['pid'], 
+                            target_job['status']
+                        )
+                        if err:
+                            error_msg = err
+                    elif val == "5":
+                        view_spool(stdscr, target_job['raw_num'])
+                        stdscr.nodelay(True)
+                        stdscr.timeout(1000)
+            pending_options = {} # Purge command staging state once executed completely
 
 if __name__ == "__main__":
     try:
