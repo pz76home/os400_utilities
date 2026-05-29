@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+import sys
+import os
+import re
+import sqlite3
+import subprocess
+import getpass
+
+# System-wide global shared paths
+DB_PATH = "/var/lib/os400/qsys.db"
+SPOOL_DIR = "/var/lib/os400/splf"
+
+def init_environment():
+    """Ensure the global OS/400 directories and database exist with correct permissions."""
+    # Attempt to create directories if they don't exist
+    # Note: The root directory /var/lib/os400 should be pre-configured with group permissions
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    os.makedirs(SPOOL_DIR, exist_ok=True)
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Enable WAL mode to allow concurrent multi-user reads/writes without locking
+    cursor.execute("PRAGMA journal_mode=WAL;")
+    
+    # Create the global master job tracking table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS active_jobs (
+            job_number INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_name TEXT NOT NULL,
+            user TEXT NOT NULL,
+            pid INTEGER,
+            status TEXT NOT NULL,
+            command TEXT NOT NULL,
+            spool_file TEXT NOT NULL,
+            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def parse_cl_args(args_list):
+    """
+    Parses OS/400 Control Language syntax strings.
+    Example: SBMJOB CMD(systemctl status nginx) JOB(WEBSERVER)
+    Returns a dictionary of uppercase keyword keys and their values.
+    """
+    full_str = " ".join(args_list)
+    # Regex extracts uppercase keywords and captures everything inside the parentheses
+    matches = re.findall(r'(\w+)\((.*?)\)', full_str)
+    return {k.upper(): v for k, v in matches}
+
+def submit_job(job_name, cmd_str):
+    """Forks the command, detaches it as a daemon, and logs it globally."""
+    username = getpass.getuser()
+    
+    # 1. Insert placeholder to claim a unique, global auto-incremented Job Number
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO active_jobs (job_name, user, pid, status, command, spool_file) VALUES (?, ?, ?, ?, ?, ?)",
+        (job_name, username, 0, '*JOBQ', cmd_str, '')
+    )
+    job_number = cursor.lastrowid
+    padded_job_num = f"{job_number:06d}"
+    
+    # Define the shared spool file location for stdout/stderr redirection
+    spool_file_path = os.path.join(SPOOL_DIR, f"JOB_{padded_job_num}.txt")
+    
+    try:
+        # 2. Open the spool file and set permissions so the 'os400' group can view it
+        spool_file = open(spool_file_path, "w")
+        try:
+            os.chmod(spool_file_path, 0o664)
+        except OSError:
+            # Pass if the current user doesn't own the file modification rights yet
+            pass
+        
+        # 3. Spawn the process completely detached from the current shell
+        process = subprocess.Popen(
+            cmd_str,
+            shell=True,
+            stdout=spool_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True  # Detaches process group from current terminal
+        )
+        
+        pid = process.pid
+        status = "*RUNNING"
+        print(f"Job {padded_job_num}/{username}/{job_name} submitted to QBATCH.")
+        
+    except Exception as e:
+        pid = -1
+        status = "*ABEND"
+        print(f"CPF1124: Job failed to start. Error: {e}")
+        spool_file_path = ""
+
+    # 4. Finalize the job status tracking info inside the shared database
+    cursor.execute(
+        "UPDATE active_jobs SET pid = ?, status = ?, spool_file = ? WHERE job_number = ?",
+        (pid, status, spool_file_path, job_number)
+    )
+    conn.commit()
+    conn.close()
+
+if __name__ == "__main__":
+    # Ensure environment is active before running execution parsing
+    try:
+        init_environment()
+    except sqlite3.OperationalError as e:
+        print(f"CPF9802: Not authorized to object qsys.db. Check group permissions. ({e})")
+        sys.exit(1)
+        
+    # Clean up input arguments mapping
+    cl_params = parse_cl_args(sys.argv[1:])
+    
+    if "CMD" not in cl_params:
+        print("CPF0001: CMD parameter is required.")
+        print("Usage: sbmjob CMD(linux_command) JOB(custom_name)")
+        sys.exit(1)
+        
+    cmd = cl_params["CMD"]
+    
+    # If JOB parameter isn't passed, default to uppercase of the binary name (capped at 10 chars)
+    default_job_name = cmd.split()[0].split('/')[-1][:10].upper()
+    job = cl_params.get("JOB", default_job_name)
+    
+    # Strip any internal quotes users might double wrap in CL commands
+    job = job.strip("'\"")
+    
+    submit_job(job, cmd)
