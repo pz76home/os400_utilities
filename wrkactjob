@@ -57,7 +57,7 @@ def update_and_get_jobs():
         
         if status == '*RUNNING' and pid > 0:
             try:
-                os.kill(pid, 0)
+                os.kill(pid, 0) # Check if Linux process is alive
                 cpu = get_cpu_usage(pid)
             except OSError:
                 status = '*OUTQ'
@@ -83,7 +83,7 @@ def kill_job(job_num, pid):
     """Executes Option 4 (End Job) by killing the Linux PID."""
     if pid > 0:
         try:
-            os.kill(pid, 15)
+            os.kill(pid, 15) # SIGTERM
         except OSError:
             pass
     conn = sqlite3.connect(DB_PATH)
@@ -106,7 +106,7 @@ def view_spool(stdscr, job_num):
         lines = ["CPF2204: Spool file not found or not generated yet."]
 
     current_line = 0
-    stdscr.nodelay(False)
+    stdscr.nodelay(False) # Halt asynchronous ticking while reading logs
     
     while True:
         stdscr.clear()
@@ -124,7 +124,6 @@ def view_spool(stdscr, job_num):
         stdscr.refresh()
         ch = stdscr.getch()
         
-        # F12, Q, or Escape to exit viewer
         if ch in (curses.KEY_F12, ord('q'), ord('Q'), ord('c'), ord('C'), 27):
             break
         elif ch == curses.KEY_DOWN and current_line < len(lines) - (height - 4):
@@ -133,22 +132,28 @@ def view_spool(stdscr, job_num):
             current_line -= 1
 
 def draw_screen(stdscr):
+    # Setup Terminal Colors (Classic IBM Green Screen Matrix Style)
     curses.start_color()
     curses.use_default_colors()
-    curses.init_pair(1, curses.COLOR_GREEN, -1)   
-    curses.init_pair(2, curses.COLOR_WHITE, -1)   
-    curses.init_pair(4, curses.COLOR_CYAN, -1)    
+    curses.init_pair(1, curses.COLOR_GREEN, -1)   # Primary Framework Elements
+    curses.init_pair(2, curses.COLOR_WHITE, -1)   # Text variables / data entries
+    curses.init_pair(4, curses.COLOR_CYAN, -1)    # Dynamic attributes labels
     
     stdscr.nodelay(True)
-    stdscr.timeout(1000) 
+    stdscr.timeout(1000) # Poll the database/PIDs every 1 second
     
     inputs = {} 
+    current_row_idx = 0  # Locks cursor row position between ticks
     
     while True:
         stdscr.clear()
         height, width = stdscr.getmaxyx()
         
         jobs = update_and_get_jobs()
+        
+        # Enforce bounds alignment on current active tracker indexes
+        if current_row_idx >= len(jobs):
+            current_row_idx = max(0, len(jobs) - 1)
         
         # 1. Header Layout
         stdscr.addstr(0, 2, "Work with Active Jobs", curses.color_pair(1))
@@ -196,43 +201,40 @@ def draw_screen(stdscr):
         legend_str = "F3=Exit   F5=Refresh   F12=Cancel"
         stdscr.addstr(height - 2, 2, legend_str, curses.color_pair(1))
         
-        if new_inputs:
-            stdscr.move(new_inputs[0]['y'], new_inputs[0]['x'])
+        # Explicit Cursor Placement (Moves exactly where the selection index points)
+        if new_inputs and current_row_idx in new_inputs:
+            stdscr.move(new_inputs[current_row_idx]['y'], new_inputs[current_row_idx]['x'])
         else:
             stdscr.move(height - 2, 2)
             
         stdscr.refresh()
         
-        # 5. Fixed Keystroke Listener
+        # 5. Keystroke Listener Loop
         ch = stdscr.getch()
         
-        # --- EXIT COMMANDS (F3, q, Q, x, X, or ESCAPE) ---
+        # --- EXIT EVENT HANDLERS ---
         if ch in (curses.KEY_F3, ord('q'), ord('Q'), ord('x'), ord('X'), 27):
             break
             
-        # --- MANUAL REFRESH (F5, r, R) ---
+        # --- MANUAL TICK TRIGGER REFRESH ---
         elif ch in (curses.KEY_F5, ord('r'), ord('R')):
             continue
             
-        # --- ARROW NAVIGATION ---
+        # --- ARROW NAVIGATION (Modifies persistent tracker indices) ---
         elif ch == curses.KEY_UP:
-            focused_y, focused_x = curses.getsyx()
-            if focused_y > 9:
-                stdscr.move(focused_y - 1, focused_x)
+            if current_row_idx > 0:
+                current_row_idx -= 1
         elif ch == curses.KEY_DOWN:
-            focused_y, focused_x = curses.getsyx()
-            if focused_y < 9 + len(jobs) - 1:
-                stdscr.move(focused_y + 1, focused_x)
+            if current_row_idx < len(jobs) - 1:
+                current_row_idx += 1
             
-        # --- ACCEPTING CODES ---
+        # --- CAPTURING COMMAND CODES ---
         elif ch in (ord('4'), ord('5'), ord(' ')):
-            focused_y, focused_x = curses.getsyx()
-            for idx, info in new_inputs.items():
-                if info['y'] == focused_y:
-                    char_str = " " if ch == ord(' ') else chr(ch)
-                    inputs[idx] = char_str.strip()
+            if jobs: 
+                char_str = " " if ch == ord(' ') else chr(ch)
+                inputs[current_row_idx] = char_str.strip()
                     
-        # --- ENTER KEY TO EXECUTE ---
+        # --- ENTER KEY EXECUTOR SUBMITTER ---
         elif ch == 10: 
             for idx, info in new_inputs.items():
                 val = inputs.get(idx, "")

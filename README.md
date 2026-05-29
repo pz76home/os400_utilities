@@ -1,5 +1,3 @@
-# os400_utilities
-os400 batch jobs on Linux
 
 # 1. Create the system-wide framework directories
 sudo mkdir -p /var/lib/os400/splf
@@ -21,3 +19,6 @@ Make it executable with chmod +x WRKACTJOB, and place it in a shared directory l
 # 4. Example usage
 SBMJOB 'CMD(sleep 15) JOB(QUICKJOB)'
 
+
+# 4. Troubleshooting jobs submitted by SBMJOB 
+python3 -c "import sqlite3; conn=sqlite3.connect('/var/lib/os400/qsys.db'); c=conn.cursor(); c.execute('SELECT * FROM active_jobs'); print(c.fetchall())"
