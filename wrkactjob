@@ -80,14 +80,19 @@ def update_and_get_jobs():
     return updated_jobs
 
 def kill_job(job_num, pid):
-    """Executes Option 4 (End Job IMMEDIATELY) by sending a SIGKILL."""
+    """Executes Option 4 (End Job) by killing the target process group."""
     if pid > 0:
         try:
-            # Upgrade to Signal 9 (SIGKILL) so processes cannot ignore or block it
-            os.kill(pid, 9) 
+            # 1. Look up the process group ID for this PID
+            pgid = os.getpgid(pid)
+            # 2. Send SIGKILL to the negative PGID to wipe out the parent and all spawned children
+            os.kill(-pgid, 9)
         except OSError:
-            # Catch errors if process is already dead or managed by another user profile
-            pass
+            try:
+                # Fallback: If process group lookup fails, kill the solo PID directly
+                os.kill(pid, 9)
+            except OSError:
+                pass
             
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
