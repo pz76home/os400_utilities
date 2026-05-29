@@ -12,7 +12,7 @@ DB_PATH = "/var/lib/os400/qsys.db"
 CPU_HISTORY = {}
 
 def get_cpu_usage(pid):
-    """Calculates real-time CPU usage over a 1-second interval using /proc delta matching."""
+    """Calculates real-time CPU usage over a 1-second interval using corrected /proc delta indexes."""
     if pid <= 0:
         return 0.0
         
@@ -20,20 +20,25 @@ def get_cpu_usage(pid):
     current_time = time.time()
     
     try:
-        # Read the target process stats safely
+        # Read the target process stats cleanly
         with open(f"/proc/{pid}/stat", "r") as f:
-            stat_content = f.read()
+            stat_content = f.read().strip()
             
-        # FIX: Handle commands with spaces by cutting out the filename wrapper (e.g. "(my command)")
-        # This keeps our array index counts perfectly bulletproof
+        # Find the absolute end of the process name wrapper
         right_parenthesis = stat_content.rfind(')')
+        if right_parenthesis == -1:
+            return 0.0
+            
+        # Extract everything AFTER the name block and split it by spaces
+        # Index 0 is now the Status String (e.g., 'R', 'S', 'D')
         stat_line = stat_content[right_parenthesis + 2:].split()
         
-        # In a cleaned line, index counts shift left by 2 positions:
-        # Index 11 = utime (user mode ticks)
-        # Index 12 = stime (kernel mode ticks)
-        utime = float(stat_line[11])
-        stime = float(stat_line[12])
+        # CORRECTED INDEXES:
+        # Relative to the Status field at Index 0:
+        # Index 12 -> utime (User space CPU clock ticks)
+        # Index 13 -> stime (Kernel/System space CPU clock ticks)
+        utime = float(stat_line[12])
+        stime = float(stat_line[13])
         total_ticks = utime + stime
         
         clk_tck = os.sysconf(os.sysconf_names['SC_CLK_TCK'])
@@ -55,11 +60,11 @@ def get_cpu_usage(pid):
             # Convert tick delta to seconds, divide by time delta, multiply for percentage
             cpu_pct = (tick_delta / clk_tck) / time_delta * 100.0
             
-            # Cap it logically based on multi-core environments
+            # Return calculated percentage, bounded to minimum 0.0
             return round(max(0.0, cpu_pct), 1)
             
     except (FileNotFoundError, IndexError, ValueError):
-        # Clean up stale data if the process died
+        # Clean up stale data if the process died or file couldn't be accessed
         if pid in CPU_HISTORY:
             del CPU_HISTORY[pid]
             
@@ -82,8 +87,6 @@ def update_and_get_jobs():
     jobs = cursor.fetchall()
     
     updated_jobs = []
-    
-    # Track which PIDs are still active to clean up the CPU cache later
     active_pids = set()
     
     for job in jobs:
@@ -180,17 +183,18 @@ def view_spool(stdscr, job_num):
             current_line -= 1
 
 def draw_screen(stdscr):
+    # Setup Terminal Colors (Classic IBM Green Screen Matrix Style)
     curses.start_color()
     curses.use_default_colors()
-    curses.init_pair(1, curses.COLOR_GREEN, -1)   
-    curses.init_pair(2, curses.COLOR_WHITE, -1)   
-    curses.init_pair(4, curses.COLOR_CYAN, -1)    
+    curses.init_pair(1, curses.COLOR_GREEN, -1)   # Primary Framework Elements
+    curses.init_pair(2, curses.COLOR_WHITE, -1)   # Text variables / data entries
+    curses.init_pair(4, curses.COLOR_CYAN, -1)    # Dynamic attributes labels
     
     stdscr.nodelay(True)
     stdscr.timeout(1000) 
     
     inputs = {} 
-    current_row_idx = 0  
+    current_row_idx = 0  # Locks cursor row position between ticks
     
     while True:
         stdscr.clear()
@@ -198,9 +202,11 @@ def draw_screen(stdscr):
         
         jobs = update_and_get_jobs()
         
+        # Enforce bounds alignment on current active tracker indexes
         if current_row_idx >= len(jobs):
             current_row_idx = max(0, len(jobs) - 1)
         
+        # 1. Header Layout
         stdscr.addstr(0, 2, "Work with Active Jobs", curses.color_pair(1))
         stdscr.addstr(0, width - 24, "OS400-LINUX SYSTEM", curses.color_pair(1))
         
@@ -213,9 +219,11 @@ def draw_screen(stdscr):
         stdscr.addstr(4, 2, "Type options, press Enter.", curses.color_pair(1))
         stdscr.addstr(5, 4, "4=End job   5=Work with spool file", curses.color_pair(4))
         
+        # 2. Main Columns Line Header
         stdscr.addstr(7, 2, "Opt  Job/Subsys  User        Type    CPU %  Status    Command", curses.color_pair(1))
         stdscr.hline(8, 0, '-', width)
         
+        # 3. Dynamic Rows Loop
         row = 9
         new_inputs = {}
         for idx, job in enumerate(jobs):
@@ -240,9 +248,11 @@ def draw_screen(stdscr):
             
         inputs = { k: v['val'] for k, v in new_inputs.items() }
         
+        # 4. Streamlined Legend Bar
         legend_str = "F3=Exit   F5=Refresh   F12=Cancel"
         stdscr.addstr(height - 2, 2, legend_str, curses.color_pair(1))
         
+        # Explicit Cursor Placement (Moves exactly where the selection index points)
         if new_inputs and current_row_idx in new_inputs:
             stdscr.move(new_inputs[current_row_idx]['y'], new_inputs[current_row_idx]['x'])
         else:
@@ -250,22 +260,32 @@ def draw_screen(stdscr):
             
         stdscr.refresh()
         
+        # 5. Keystroke Listener Loop
         ch = stdscr.getch()
         
+        # --- EXIT EVENT HANDLERS ---
         if ch in (curses.KEY_F3, ord('q'), ord('Q'), ord('x'), ord('X'), 27):
             break
+            
+        # --- MANUAL TICK TRIGGER REFRESH ---
         elif ch in (curses.KEY_F5, ord('r'), ord('R')):
             continue
+            
+        # --- ARROW NAVIGATION ---
         elif ch == curses.KEY_UP:
             if current_row_idx > 0:
                 current_row_idx -= 1
         elif ch == curses.KEY_DOWN:
             if current_row_idx < len(jobs) - 1:
                 current_row_idx += 1
+            
+        # --- CAPTURING COMMAND CODES ---
         elif ch in (ord('4'), ord('5'), ord(' ')):
             if jobs: 
                 char_str = " " if ch == ord(' ') else chr(ch)
                 inputs[current_row_idx] = char_str.strip()
+                    
+        # --- ENTER KEY EXECUTOR SUBMITTER ---
         elif ch == 10: 
             for idx, info in new_inputs.items():
                 val = inputs.get(idx, "")
