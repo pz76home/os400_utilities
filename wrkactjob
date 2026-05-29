@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+import os
+import sys
+import curses
+import sqlite3
+import time
+
+DB_PATH = "/var/lib/os400/qsys.db"
+
+def get_cpu_usage(pid):
+    """Calculates rough CPU usage for a PID using /proc."""
+    if pid <= 0:
+        return 0.0
+    try:
+        with open("/proc/uptime", "r") as f:
+            uptime = float(f.readline().split()[0])
+        
+        with open(f"/proc/{pid}/stat", "r") as f:
+            stat = f.readline().split()
+            
+        utime = float(stat[13])
+        stime = float(stat[14])
+        starttime = float(stat[21])
+        
+        clk_tck = os.sysconf(os.sysconf_names['SC_CLK_TCK'])
+        
+        total_time = (utime + stime) / clk_tck
+        seconds = uptime - (starttime / clk_tck)
+        
+        if seconds > 0:
+            return round((total_time / seconds) * 100, 1)
+    except (FileNotFoundError, IndexError, ZeroDivisionError):
+        pass
+    return 0.0
+
+def update_and_get_jobs():
+    """Queries jobs from DB, verifies if Linux PIDs live, updates status."""
+    if not os.path.exists(DB_PATH):
+        return []
+        
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT job_number, job_name, user, pid, status, command 
+        FROM active_jobs 
+        WHERE status IN ('*RUNNING', '*JOBQ') 
+        ORDER BY job_number DESC
+    """)
+    jobs = cursor.fetchall()
+    
+    updated_jobs = []
+    for job in jobs:
+        job_num, job_name, user, pid, status, command = job
+        padded_num = f"{job_num:06d}"
+        cpu = 0.0
+        
+        if status == '*RUNNING' and pid > 0:
+            try:
+                os.kill(pid, 0) # Check if Linux process is alive
+                cpu = get_cpu_usage(pid)
+            except OSError:
+                status = '*OUTQ'
+                cursor.execute("UPDATE active_jobs SET status = '*OUTQ' WHERE job_number = ?", (job_num,))
+                conn.commit()
+                
+        if status in ('*RUNNING', '*JOBQ'):
+            updated_jobs.append({
+                'num': padded_num,
+                'raw_num': job_num,
+                'name': job_name,
+                'user': user,
+                'pid': pid,
+                'status': status,
+                'cpu': cpu,
+                'cmd': command
+            })
+            
+    conn.close()
+    return updated_jobs
+
+def kill_job(job_num, pid):
+    """Executes Option 4 (End Job) by killing the Linux PID."""
+    if pid > 0:
+        try:
+            os.kill(pid, 15) # SIGTERM
+        except OSError:
+            pass
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE active_jobs SET status = '*OUTQ' WHERE job_number = ?", (job_num,))
+    conn.commit()
+    conn.close()
+
+def view_spool(stdscr, job_num):
+    """Executes Option 5 to view the spooled stdout text file (with F12/Q support)."""
+    spool_path = f"/var/lib/os400/splf/JOB_{job_num:06d}.txt"
+    stdscr.clear()
+    stdscr.refresh()
+    
+    lines = []
+    if os.path.exists(spool_path):
+        with open(spool_path, "r") as f:
+            lines = f.readlines()
+    else:
+        lines = ["CPF2204: Spool file not found or not generated yet."]
+
+    current_line = 0
+    stdscr.nodelay(False) # Wait for keystrokes in viewer mode
+    
+    while True:
+        stdscr.clear()
+        height, width = stdscr.getmaxyx()
+        
+        # Header
+        stdscr.addstr(0, 2, f"Display Spooled File: JOB_{job_num:06d}.txt", curses.color_pair(2))
+        stdscr.addstr(1, 2, "F12=Cancel / Return to WRKACTJOB", curses.color_pair(1))
+        stdscr.hline(2, 0, '-', width)
+        
+        # Render contents page
+        for i in range(height - 4):
+            line_idx = current_line + i
+            if line_idx < len(lines):
+                stdscr.addstr(3 + i, 2, lines[line_idx][:width-4].rstrip())
+                
+        stdscr.refresh()
+        ch = stdscr.getch()
+        
+        if ch in (curses.KEY_F12, ord('q'), ord('Q'), ord('c'), ord('C')):
+            break
+        elif ch == curses.KEY_DOWN and current_line < len(lines) - (height - 4):
+            current_line += 1
+        elif ch == curses.KEY_UP and current_line > 0:
+            current_line -= 1
+
+def draw_screen(stdscr):
+    # Setup standard IBM 5250 Terminal Theme Colors (Green & White on black background)
+    curses.start_color()
+    curses.use_default_colors()
+    curses.init_pair(1, curses.COLOR_GREEN, -1)   # Primary Labels / Active elements
+    curses.init_pair(2, curses.COLOR_WHITE, -1)   # Core Data fields
+    curses.init_pair(4, curses.COLOR_CYAN, -1)    # Instruction lines
+    
+    # Configure non-blocking key reads for background asynchronous refresh
+    stdscr.nodelay(True)
+    stdscr.timeout(1000) # Re-scans DB and UI state once every 1 second automatically
+    
+    inputs = {} 
+    
+    while True:
+        stdscr.clear()
+        height, width = stdscr.getmaxyx()
+        
+        jobs = update_and_get_jobs()
+        
+        # 1. Header Layout
+        stdscr.addstr(0, 2, "Work with Active Jobs", curses.color_pair(1))
+        stdscr.addstr(0, width - 24, "OS400-LINUX SYSTEM", curses.color_pair(1))
+        
+        curr_time = time.strftime("%Y-%m-%d  %H:%M:%S")
+        stdscr.addstr(1, width - 24, curr_time, curses.color_pair(2))
+        
+        total_cpu = sum(j['cpu'] for j in jobs)
+        stdscr.addstr(2, 2, f"CPU %: {total_cpu:5.1f}      Active Jobs: {len(jobs):5d}", curses.color_pair(1))
+        
+        stdscr.addstr(4, 2, "Type options, press Enter.", curses.color_pair(1))
+        stdscr.addstr(5, 4, "4=End job   5=Work with spool file", curses.color_pair(4))
+        
+        # 2. Main Columns Line Header
+        stdscr.addstr(7, 2, "Opt  Job/Subsys  User        Type    CPU %  Status    Command", curses.color_pair(1))
+        stdscr.hline(8, 0, '-', width)
+        
+        # 3. Dynamic Rows Loop
+        row = 9
+        new_inputs = {}
+        for idx, job in enumerate(jobs):
+            if row >= height - 3: 
+                break # Hard prevent bounds crashes on small windows
+                
+            opt_val = inputs.get(idx, "")
+            
+            stdscr.addstr(row, 2, "[ ]", curses.color_pair(1))
+            if opt_val:
+                stdscr.addstr(row, 3, opt_val, curses.color_pair(2))
+                
+            stdscr.addstr(row, 7, f"{job['name'][:10]:12}", curses.color_pair(2))
+            stdscr.addstr(row, 20, f"{job['user'][:10]:12}", curses.color_pair(2))
+            stdscr.addstr(row, 34, "BCH", curses.color_pair(4))
+            stdscr.addstr(row, 42, f"{job['cpu']:5.1f}", curses.color_pair(2))
+            stdscr.addstr(row, 49, f"{job['status']:10}", curses.color_pair(1 if job['status'] == '*RUNNING' else 2))
+            stdscr.addstr(row, 59, f"{job['cmd'][:width-61]}", curses.color_pair(2))
+            
+            new_inputs[idx] = { 'val': opt_val, 'y': row, 'x': 3, 'job': job }
+            row += 1
+            
+        inputs = { k: v['val'] for k, v in new_inputs.items() }
+        
+        # 4. Legend Bar (Bottom Command Function Keys Mapping)
+        legend_str = "F3=Exit   F4=Prompt   F5=Refresh   F12=Cancel"
+        stdscr.addstr(height - 2, 2, legend_str, curses.color_pair(1))
+        
+        # Cursor positioning strategy (lock to first available user row input option)
+        if new_inputs:
+            stdscr.move(new_inputs[0]['y'], new_inputs[0]['x'])
+        else:
+            stdscr.move(height - 2, 2)
+            
+        stdscr.refresh()
+        
+        # 5. Keystroke Listener and Event Decoders
+        ch = stdscr.getch()
+        
+        # --- F3: EXIT APPLICATION ---
+        if ch in (curses.KEY_F3, ord('q'), ord('Q')):
+            break
+            
+        # --- F5: MANUAL REFRESH ---
+        elif ch in (curses.KEY_F5, ord('r'), ord('R')):
+            continue
+            
+        # --- ARROW NAVIGATION KEYS ---
+        elif ch == curses.KEY_UP:
+            focused_y, focused_x = curses.getsyx()
+            if focused_y > 9:
+                stdscr.move(focused_y - 1, focused_x)
+        elif ch == curses.KEY_DOWN:
+            focused_y, focused_x = curses.getsyx()
+            if focused_y < 9 + len(jobs) - 1:
+                stdscr.move(focused_y + 1, focused_x)
+                
+        # --- F4: CONTEXTUAL PROMPT POPUP ---
+        elif ch in (curses.KEY_F4, ord('p'), ord('P')):
+            focused_y, focused_x = curses.getsyx()
+            for idx, info in new_inputs.items():
+                if info['y'] == focused_y:
+                    stdscr.clear()
+                    stdscr.addstr(2, 5, f"--- Select Option for Job: {info['job']['name']} ---", curses.color_pair(1))
+                    stdscr.addstr(4, 7, "4 = End Job (Kills active process via SIGTERM)", curses.color_pair(2))
+                    stdscr.addstr(5, 7, "5 = Work with Spool File (Inspects standard output log)", curses.color_pair(2))
+                    stdscr.addstr(8, 5, "Press F12 / Enter to return...", curses.color_pair(4))
+                    stdscr.refresh()
+                    
+                    stdscr.nodelay(False) # Halt refresh loop execution during active prompt modal
+                    while True:
+                        popup_ch = stdscr.getch()
+                        if popup_ch in (curses.KEY_F12, 10, ord('c'), ord('C')):
+                            break
+                    stdscr.nodelay(True) # Re-enable async task timers
+            
+        # --- ACCEPTING OPTION COMMAND CODES ---
+        elif ch in (ord('4'), ord('5'), ord(' ')):
+            focused_y, focused_x = curses.getsyx()
+            for idx, info in new_inputs.items():
+                if info['y'] == focused_y:
+                    char_str = " " if ch == ord(' ') else chr(ch)
+                    inputs[idx] = char_str.strip()
+                    
+        # --- ENTER KEY: EXECUTE SUBMISSIONS QUEUE ---
+        elif ch == 10: 
+            for idx, info in new_inputs.items():
+                val = inputs.get(idx, "")
+                if val == "4":
+                    kill_job(info['job']['raw_num'], info['job']['pid'])
+                elif val == "5":
+                    view_spool(stdscr, info['job']['raw_num'])
+                    stdscr.nodelay(True)
+                    stdscr.timeout(1000)
+            inputs = {}
+
+if __name__ == "__main__":
+    curses.wrapper(draw_screen)
