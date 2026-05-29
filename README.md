@@ -35,11 +35,11 @@ sudo chmod g+s /var/lib/os400 /var/lib/os400/splf
 
 Clone the this git repo or manually copy and paste the python code of the commands.
 
-Make it executable with chmod +x SBMJOB, and place it in a shared directory like /usr/local/bin/SBMJOB so all users can invoke it.
+Make it executable with chmod +x SBMJOB, and place it in a shared directory E.g. /usr/local/bin/ so all users can invoke it.
 
-Make it executable with chmod +x WRKACTJOB, and place it in a shared directory like /usr/local/bin/WRKACTJOB so all users can invoke it.
+Make it executable with chmod +x WRKACTJOB, and place it in a shared directory like /usr/local/bin/ so all users can invoke it.
 
-Make it executable with chmod +x WRKSBMJOB, and place it in a shared directory like /usr/local/bin/WRKSBMJOB so all users can invoke it.
+Make it executable with chmod +x WRKSBMJOB, and place it in a shared directory like /usr/local/bin/ so all users can invoke it.
 
 
 # 4. Example usage
