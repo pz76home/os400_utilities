@@ -1,3 +1,17 @@
+# What is this, you may ask?
+
+One thing I used to love about the AS400 (or IBMi) was the job management.
+I have brought the basic functionality of QBATCH or running background BATCH jobs to Linux.
+
+SBMJOB will allow you to submit a command, script or binary as a background job. 
+
+WRKACTJOB will allow you view, list and end the running jobs.
+
+WRKSBMJOB will allow you view, list and end the all submitted jobs.
+
+Also WRKSBMJOB is a good way to also clean up your output (SPOOL) files and clean the jobs from the database.
+
+This was vibe coded with Google Gemini with alot of prompting to get this workable. 
 
 # 1. Create the system-wide framework directories
 sudo mkdir -p /var/lib/os400/splf
@@ -33,3 +47,11 @@ SBMJOB 'CMD(ping -c 30 127.0.0.1) JOB(NETPING)'
 
 # 4. Troubleshooting jobs submitted by SBMJOB 
 python3 -c "import sqlite3; conn=sqlite3.connect('/var/lib/os400/qsys.db'); c=conn.cursor(); c.execute('SELECT * FROM active_jobs'); print(c.fetchall())"
+
+# Things I would like to do
+
+Create QCMD to have jobs run interactively, displaying a QINTER in WRKACTJOB. (These would run at the OS default nice values)
+
+Have SBMJOB run the BATCH jobs at a lower nice value, though able to change the priority to renice the jobs
+
+The main challenge (I had with Ubuntu anyway) was the system limits on letting me renice my jobs. I will play with this when I have the time.
