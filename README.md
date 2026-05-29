@@ -11,7 +11,7 @@ WRKSBMJOB will allow you view, list and end the all submitted jobs.
 
 Also WRKSBMJOB is a good way to also clean up your output (SPOOL) files and clean the jobs from the database.
 
-This was vibe coded with Google Gemini with alot of prompting to get this workable. 
+This was vibe coded with Google Gemini with alot of prompting to get this to the now working functionality. 
 
 # 1. Create the system-wide framework directories
 sudo mkdir -p /var/lib/os400/splf
