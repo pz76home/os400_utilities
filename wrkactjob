@@ -79,63 +79,6 @@ def update_and_get_jobs():
     conn.close()
     return updated_jobs
 
-def change_job_priority(stdscr, job_name, pid):
-    """Prompts the user for a new Linux nice value (-10 to 19) without screen flickering."""
-    if pid <= 0:
-        return
-
-    # Disable background refresh timers and halt drawing ticks
-    stdscr.timeout(-1)
-    stdscr.nodelay(False)
-    curses.flushinp()
-    curses.noecho() 
-
-    stdscr.clear()
-    
-    stdscr.addstr(2, 5, f"--- Change Job Attributes (CHGJOB): {job_name} ---", curses.color_pair(1))
-    stdscr.addstr(4, 5, "Current Linux Nice Value: 0 (Default)", curses.color_pair(2))
-    stdscr.addstr(5, 5, "Enter new priority level (-10 to 19): ===> ", curses.color_pair(1))
-    stdscr.addstr(8, 5, "Press Enter to execute, F12 to cancel.", curses.color_pair(4))
-    stdscr.refresh()
-    
-    input_str = ""
-    cursor_x = 43
-    
-    # Isolated keystroke collection engine to guard against terminal flashing
-    while True:
-        stdscr.move(5, cursor_x + len(input_str))
-        stdscr.refresh()
-        ch = stdscr.getch()
-        
-        if ch == 10:  # ENTER KEY
-            break
-        elif ch in (curses.KEY_F12, 27):  # F12 or ESCAPE
-            input_str = ""
-            break
-        elif ch in (curses.KEY_BACKSPACE, 127, 8):  # Backspace
-            if len(input_str) > 0:
-                input_str = input_str[:-1]
-                stdscr.addstr(5, cursor_x + len(input_str), " ")
-        elif len(input_str) < 4:  
-            char = chr(ch)
-            if char.isdigit() or (char == '-' and len(input_str) == 0):
-                input_str += char
-                stdscr.addstr(5, cursor_x + len(input_str) - 1, char, curses.color_pair(2))
-
-    # Try applying nice adjustments outside the capture window
-    if input_str:
-        try:
-            new_nice = int(input_str)
-            if -10 <= new_nice <= 19:
-                os.setpriority(os.PRIO_PROCESS, pid, new_nice)
-        except (ValueError, OSError):
-            # Note: Linux rejects non-sudo users dropping values under 0
-            pass
-
-    # Reinstate active engine parameters
-    stdscr.nodelay(True)
-    stdscr.timeout(1000)
-
 def kill_job(job_num, pid):
     """Executes Option 4 (End Job) by killing the Linux PID."""
     if pid > 0:
@@ -163,7 +106,7 @@ def view_spool(stdscr, job_num):
         lines = ["CPF2204: Spool file not found or not generated yet."]
 
     current_line = 0
-    stdscr.nodelay(False) 
+    stdscr.nodelay(False) # Halt asynchronous ticking while reading logs
     
     while True:
         stdscr.clear()
@@ -197,7 +140,7 @@ def draw_screen(stdscr):
     curses.init_pair(4, curses.COLOR_CYAN, -1)    # Dynamic attributes labels
     
     stdscr.nodelay(True)
-    stdscr.timeout(1000) 
+    stdscr.timeout(1000) # Poll the database/PIDs every 1 second
     
     inputs = {} 
     current_row_idx = 0  # Locks cursor row position between ticks
@@ -223,7 +166,7 @@ def draw_screen(stdscr):
         stdscr.addstr(2, 2, f"CPU %: {total_cpu:5.1f}      Active Jobs: {len(jobs):5d}", curses.color_pair(1))
         
         stdscr.addstr(4, 2, "Type options, press Enter.", curses.color_pair(1))
-        stdscr.addstr(5, 4, "2=Change priority   4=End job   5=Work with spool file", curses.color_pair(4))
+        stdscr.addstr(5, 4, "4=End job   5=Work with spool file", curses.color_pair(4))
         
         # 2. Main Columns Line Header
         stdscr.addstr(7, 2, "Opt  Job/Subsys  User        Type    CPU %  Status    Command", curses.color_pair(1))
@@ -277,7 +220,7 @@ def draw_screen(stdscr):
         elif ch in (curses.KEY_F5, ord('r'), ord('R')):
             continue
             
-        # --- ARROW NAVIGATION ---
+        # --- ARROW NAVIGATION (Modifies persistent tracker indices) ---
         elif ch == curses.KEY_UP:
             if current_row_idx > 0:
                 current_row_idx -= 1
@@ -286,7 +229,7 @@ def draw_screen(stdscr):
                 current_row_idx += 1
             
         # --- CAPTURING COMMAND CODES ---
-        elif ch in (ord('2'), ord('4'), ord('5'), ord(' ')):
+        elif ch in (ord('4'), ord('5'), ord(' ')):
             if jobs: 
                 char_str = " " if ch == ord(' ') else chr(ch)
                 inputs[current_row_idx] = char_str.strip()
@@ -295,9 +238,7 @@ def draw_screen(stdscr):
         elif ch == 10: 
             for idx, info in new_inputs.items():
                 val = inputs.get(idx, "")
-                if val == "2":
-                    change_job_priority(stdscr, info['job']['name'], info['job']['pid'])
-                elif val == "4":
+                if val == "4":
                     kill_job(info['job']['raw_num'], info['job']['pid'])
                 elif val == "5":
                     view_spool(stdscr, info['job']['raw_num'])
