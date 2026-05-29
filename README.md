@@ -10,16 +10,22 @@ sudo chmod -R 775 /var/lib/os400
 sudo chmod g+s /var/lib/os400 /var/lib/os400/splf
 
 
-# 4. Place python scripts in /usr/local/bin and chmod them to be executable
+# 5. Place python scripts in /usr/local/bin and chmod them to be executable
 Make it executable with chmod +x SBMJOB, and place it in a shared directory like /usr/local/bin/SBMJOB so all users can invoke it.
 
 Make it executable with chmod +x WRKACTJOB, and place it in a shared directory like /usr/local/bin/WRKACTJOB so all users can invoke it.
 
 
-# 4. Example usage
+# 6. Example usage
 SBMJOB 'CMD(sleep 15) JOB(QUICKJOB)'
 SBMJOB 'CMD(ping -c 30 127.0.0.1) JOB(NETPING)'
 
 
-# 4. Troubleshooting jobs submitted by SBMJOB 
+# 7. Troubleshooting jobs submitted by SBMJOB 
 python3 -c "import sqlite3; conn=sqlite3.connect('/var/lib/os400/qsys.db'); c=conn.cursor(); c.execute('SELECT * FROM active_jobs'); print(c.fetchall())"
+
+
+# 6. If you want to allow non root users to change priority
+sudo nano (or vi) /etc/security/limits.conf
+
+yourusername    hard    nice    -10

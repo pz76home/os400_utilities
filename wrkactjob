@@ -80,7 +80,7 @@ def update_and_get_jobs():
     return updated_jobs
 
 def change_job_priority(stdscr, job_name, pid):
-    """Prompts the user for a new Linux nice value (-20 to 19) without screen flickering."""
+    """Prompts the user for a new Linux nice value (-10 to 19) without screen flickering."""
     if pid <= 0:
         return
 
@@ -94,7 +94,7 @@ def change_job_priority(stdscr, job_name, pid):
     
     stdscr.addstr(2, 5, f"--- Change Job Attributes (CHGJOB): {job_name} ---", curses.color_pair(1))
     stdscr.addstr(4, 5, "Current Linux Nice Value: 0 (Default)", curses.color_pair(2))
-    stdscr.addstr(5, 5, "Enter new priority level (-20 to 19): ===> ", curses.color_pair(1))
+    stdscr.addstr(5, 5, "Enter new priority level (-10 to 19): ===> ", curses.color_pair(1))
     stdscr.addstr(8, 5, "Press Enter to execute, F12 to cancel.", curses.color_pair(4))
     stdscr.refresh()
     
@@ -126,7 +126,7 @@ def change_job_priority(stdscr, job_name, pid):
     if input_str:
         try:
             new_nice = int(input_str)
-            if -20 <= new_nice <= 19:
+            if -10 <= new_nice <= 19:
                 os.setpriority(os.PRIO_PROCESS, pid, new_nice)
         except (ValueError, OSError):
             # Note: Linux rejects non-sudo users dropping values under 0
