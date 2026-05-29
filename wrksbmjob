@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+import os
+import sys
+import curses
+import sqlite3
+import time
+import getpass
+
+DB_PATH = "/var/lib/os400/qsys.db"
+
+# Dynamically resolve the current session's logged-in user
+CURRENT_USER = getpass.getuser()
+
+def update_and_get_submitted_jobs():
+    """Queries all historical and current jobs belonging specifically 
+    to the logged-on user from the database.
+    """
+    if not os.path.exists(DB_PATH):
+        return []
+        
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Filter strictly by the current logged-in user session
+    cursor.execute("""
+        SELECT job_number, job_name, user, pid, status, command 
+        FROM active_jobs 
+        WHERE user = ?
+        ORDER BY job_number DESC
+    """, (CURRENT_USER,))
+    jobs = cursor.fetchall()
+    
+    updated_jobs = []
+    for job in jobs:
+        job_num, job_name, user, pid, status, command = job
+        padded_num = f"{job_num:06d}"
+        
+        # Verify if running processes died unexpectedly while we weren't looking
+        if status == '*RUNNING' and pid > 0:
+            try:
+                os.kill(pid, 0) 
+            except OSError:
+                status = '*OUTQ'
+                cursor.execute("UPDATE active_jobs SET status = '*OUTQ' WHERE job_number = ?", (job_num,))
+                conn.commit()
+                
+        updated_jobs.append({
+            'num': padded_num,
+            'raw_num': job_num,
+            'name': job_name,
+            'user': user,
+            'pid': pid,
+            'status': status,
+            'cmd': command
+        })
+            
+    conn.close()
+    return updated_jobs
+
+def purge_job_and_spool(job_num, pid, status):
+    """Executes Option 4 (Delete). Explicitly blocks deletion if the job is 
+    actively running, returning an error message string.
+    """
+    # Safeguard: Do not allow deletion if the job is currently running
+    if status == '*RUNNING':
+        return "CPF1338: Job is currently running and cannot be deleted."
+
+    # Safely remove the physical spool file from disk
+    spool_path = f"/var/lib/os400/splf/JOB_{job_num:06d}.txt"
+    if os.path.exists(spool_path):
+        try:
+            os.remove(spool_path)
+        except OSError:
+            pass # Suppress permission or filesystem errors safely
+            
+    # Purge the job entry completely from the SQLite architecture
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM active_jobs WHERE job_number = ?", (job_num,))
+    conn.commit()
+    conn.close()
+    return None
+
+def view_spool(stdscr, job_num):
+    """Executes Option 5 to view the spooled stdout text file content."""
+    spool_path = f"/var/lib/os400/splf/JOB_{job_num:06d}.txt"
+    stdscr.clear()
+    stdscr.refresh()
+    
+    lines = []
+    if os.path.exists(spool_path):
+        with open(spool_path, "r") as f:
+            lines = f.readlines()
+    else:
+        lines = ["CPF2204: Spool file not found or not generated yet."]
+
+    current_line = 0
+    stdscr.nodelay(False) 
+    
+    while True:
+        stdscr.clear()
+        height, width = stdscr.getmaxyx()
+        
+        stdscr.addstr(0, 2, f"Display Spooled File: JOB_{job_num:06d}.txt", curses.color_pair(2))
+        stdscr.addstr(1, 2, "F12=Cancel / Return to WRKSBMJOB", curses.color_pair(1))
+        stdscr.hline(2, 0, '-', width)
+        
+        for i in range(height - 4):
+            line_idx = current_line + i
+            if line_idx < len(lines):
+                stdscr.addstr(3 + i, 2, lines[line_idx][:width-4].rstrip())
+                
+        stdscr.refresh()
+        ch = stdscr.getch()
+        
+        if ch in (curses.KEY_F12, ord('q'), ord('Q'), ord('c'), ord('C'), 27):
+            break
+        elif ch == curses.KEY_DOWN and current_line < len(lines) - (height - 4):
+            current_line += 1
+        elif ch == curses.KEY_UP and current_line > 0:
+            current_line -= 1
+
+def draw_screen(stdscr):
+    curses.start_color()
+    curses.use_default_colors()
+    curses.init_pair(1, curses.COLOR_GREEN, -1)   
+    curses.init_pair(2, curses.COLOR_WHITE, -1)   
+    curses.init_pair(3, curses.COLOR_RED, -1)     # Red for error handling alerts
+    curses.init_pair(4, curses.COLOR_CYAN, -1)    
+    
+    stdscr.nodelay(True)
+    stdscr.timeout(1000) 
+    
+    inputs = {} 
+    current_row_idx = 0  
+    error_msg = "" # Keeps track of active error text
+    
+    while True:
+        stdscr.clear()
+        height, width = stdscr.getmaxyx()
+        
+        jobs = update_and_get_submitted_jobs()
+        
+        if current_row_idx >= len(jobs):
+            current_row_idx = max(0, len(jobs) - 1)
+        
+        # UI Header matching classical green-screen OS/400 aesthetics
+        stdscr.addstr(0, 2, "Work with Submitted Jobs", curses.color_pair(1))
+        stdscr.addstr(0, width - 24, "OS400-LINUX SYSTEM", curses.color_pair(1))
+        
+        curr_time = time.strftime("%Y-%m-%d  %H:%M:%S")
+        stdscr.addstr(1, width - 24, curr_time, curses.color_pair(2))
+        
+        stdscr.addstr(2, 2, f"User: {CURRENT_USER:<10}", curses.color_pair(1))
+        
+        stdscr.addstr(4, 2, "Type options, press Enter.", curses.color_pair(1))
+        stdscr.addstr(5, 4, "4=Delete/Purge   5=Display spool file", curses.color_pair(4))
+        
+        stdscr.addstr(7, 2, "Opt  Job Number  Job/Subsys  User        Status    Command", curses.color_pair(1))
+        stdscr.hline(8, 0, '-', width)
+        
+        row = 9
+        new_inputs = {}
+        for idx, job in enumerate(jobs):
+            if row >= height - 4: # Save extra lines at the bottom for errors
+                break 
+                
+            opt_val = inputs.get(idx, "")
+            
+            stdscr.addstr(row, 2, "[ ]", curses.color_pair(1))
+            if opt_val:
+                stdscr.addstr(row, 3, opt_val, curses.color_pair(2))
+                
+            stdscr.addstr(row, 7, f"{job['num']:12}", curses.color_pair(2))
+            stdscr.addstr(row, 20, f"{job['name'][:10]:12}", curses.color_pair(2))
+            stdscr.addstr(row, 32, f"{job['user'][:10]:12}", curses.color_pair(2))
+            
+            # Dynamic color coding for statuses
+            status_color = curses.color_pair(1) if job['status'] == '*RUNNING' else curses.color_pair(2)
+            stdscr.addstr(row, 44, f"{job['status']:10}", status_color)
+            
+            stdscr.addstr(row, 56, f"{job['cmd'][:width-58]}", curses.color_pair(2))
+            
+            new_inputs[idx] = { 'val': opt_val, 'y': row, 'x': 3, 'job': job }
+            row += 1
+            
+        inputs = { k: v['val'] for k, v in new_inputs.items() }
+        
+        # Render error feedback message bar if populated
+        if error_msg:
+            stdscr.addstr(height - 3, 2, error_msg, curses.color_pair(3))
+        
+        legend_str = "F3=Exit   F5=Refresh   F12=Cancel"
+        stdscr.addstr(height - 2, 2, legend_str, curses.color_pair(1))
+        
+        if new_inputs and current_row_idx in new_inputs:
+            stdscr.move(new_inputs[current_row_idx]['y'], new_inputs[current_row_idx]['x'])
+        else:
+            stdscr.move(height - 2, 2)
+            
+        stdscr.refresh()
+        ch = stdscr.getch()
+        
+        # Reset error message on user input interaction
+        if ch != -1:
+            error_msg = ""
+        
+        if ch in (curses.KEY_F3, ord('q'), ord('Q'), ord('x'), ord('X'), 27):
+            break
+        elif ch in (curses.KEY_F5, ord('r'), ord('R')):
+            continue
+        elif ch == curses.KEY_UP:
+            if current_row_idx > 0:
+                current_row_idx -= 1
+        elif ch == curses.KEY_DOWN:
+            if current_row_idx < len(jobs) - 1:
+                current_row_idx += 1
+        elif ch in (ord('4'), ord('5'), ord(' ')):
+            if jobs: 
+                char_str = " " if ch == ord(' ') else chr(ch)
+                inputs[current_row_idx] = char_str.strip()
+        elif ch == 10: # Enter Key
+            for idx, info in new_inputs.items():
+                val = inputs.get(idx, "")
+                if val == "4":
+                    err = purge_job_and_spool(
+                        info['job']['raw_num'], 
+                        info['job']['pid'], 
+                        info['job']['status']
+                    )
+                    if err:
+                        error_msg = err
+                elif val == "5":
+                    view_spool(stdscr, info['job']['raw_num'])
+                    stdscr.nodelay(True)
+                    stdscr.timeout(1000)
+            inputs = {}
+
+if __name__ == "__main__":
+    try:
+        curses.wrapper(draw_screen)
+    except KeyboardInterrupt:
+        sys.exit(0)

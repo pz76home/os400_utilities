@@ -15,6 +15,8 @@ Make it executable with chmod +x SBMJOB, and place it in a shared directory like
 
 Make it executable with chmod +x WRKACTJOB, and place it in a shared directory like /usr/local/bin/WRKACTJOB so all users can invoke it.
 
+Make it executable with chmod +x WRKSBMJOB, and place it in a shared directory like /usr/local/bin/WRKSBMJOB so all users can invoke it.
+
 
 # 4. Example usage
 SBMJOB 'CMD(sleep 15) JOB(QUICKJOB)'
