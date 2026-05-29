@@ -41,6 +41,7 @@ Make it executable with chmod +x WRKACTJOB, and place it in a shared directory l
 
 Make it executable with chmod +x WRKSBMJOB, and place it in a shared directory like /usr/local/bin/ so all users can invoke it.
 
+YOU WILL NEED to RUN A SBMJOB FIRST TO CREATE THE SQLITE DB TABLE THAT THE OTHER COMMAND RELY ON
 
 # 4. Example usage
 SBMJOB 'CMD(sleep 15) JOB(QUICKJOB)'
