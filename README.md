@@ -7,7 +7,7 @@ SBMJOB will allow you to submit a command, script or binary as a background job.
 
 WRKACTJOB will allow you view, list and end the "ACTIVE" running jobs.
 
-WRKSBMJOB will allow you view, list and end the ALL submitted jobs.
+WRKSBMJOB will allow you view, list and end ALL submitted jobs.
 
 Also WRKSBMJOB is a good way to also clean up your output (SPOOL) files and clean the jobs from the database.
 
