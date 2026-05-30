@@ -8,54 +8,91 @@ import errno
 
 DB_PATH = "/var/lib/os400/qsys.db"
 
-# Cache: Module-level dict storing (prev_total_ticks, prev_ts) per PID
+# Cache: Module-level dict storing (prev_total_tree_ticks, prev_ts) per parent PID
 cpu_cache = {}
 
-def get_cpu_usage(pid):
-    """Calculates CPU% over an elapsed delta window normalized for system core count."""
+def get_system_proc_snapshot():
+    """
+    Scans /proc exactly once per refresh cycle.
+    Returns a dictionary mapping: pid -> {'ppid': parent_pid, 'ticks': total_ticks}
+    """
+    snapshot = {}
+    try:
+        for d in os.listdir('/proc'):
+            if d.isdigit():
+                try:
+                    pid = int(d)
+                    with open(f"/proc/{d}/stat", "r") as f:
+                        content = f.read().strip()
+                        
+                    r_paren = content.rfind(')')
+                    if r_paren == -1:
+                        continue
+                        
+                    stat_line = content[r_paren + 2:].split()
+                    
+                    # Layout mappings from /proc/[pid]/stat text tokens
+                    ppid = int(stat_line[1])       # Field 4 in raw stat
+                    utime = float(stat_line[11])   # Field 14 in raw stat
+                    stime = float(stat_line[12])   # Field 15 in raw stat
+                    
+                    snapshot[pid] = {
+                        'ppid': ppid,
+                        'ticks': utime + stime
+                    }
+                except (FileNotFoundError, PermissionError, IndexError, ValueError):
+                    continue
+    except OSError:
+        pass
+    return snapshot
+
+def get_cpu_usage(pid, snapshot):
+    """
+    Calculates CPU% over an elapsed delta window by aggregating the ticks
+    of the parent process AND any of its active child processes (Fixes Ubuntu dash vs RHEL bash).
+    """
     if pid <= 0:
         return 0.0
         
     global cpu_cache
     now = time.time()
     
-    try:
-        # Read /proc/<pid>/stat (world-readable on standard Linux environments)
-        with open(f"/proc/{pid}/stat", "r") as f:
-            stat_content = f.read().strip()
-            
-        right_parenthesis = stat_content.rfind(')')
-        if right_parenthesis == -1:
-            return 0.0
-            
-        stat_line = stat_content[right_parenthesis + 2:].split()
+    # Aggregate ticks for the parent job PID and all its immediate sub-children
+    total_tree_ticks = 0.0
+    if pid in snapshot:
+        total_tree_ticks += snapshot[pid]['ticks']
         
-        utime = float(stat_line[11])
-        stime = float(stat_line[12])
-        total_ticks = utime + stime
-        
-        prev = cpu_cache.get(pid)
-        cpu_pct = 0.0
-        
-        if prev:
-            prev_total_ticks, prev_ts = prev
-            elapsed_seconds = now - prev_ts
-            clk_tck = os.sysconf(os.sysconf_names['SC_CLK_TCK'])
+    for child_pid, info in snapshot.items():
+        if info['ppid'] == pid:
+            total_tree_ticks += info['ticks']
             
-            if elapsed_seconds > 0:
-                cores = os.cpu_count() or 1
-                cpu_pct = (((total_ticks - prev_total_ticks) / (elapsed_seconds * clk_tck)) * 100.0) # Remove the core multiplier
+    # Process delta timeline calculations
+    prev = cpu_cache.get(pid)
+    cpu_pct = 0.0
+    
+    if prev:
+        prev_total_ticks, prev_ts = prev
+        elapsed_seconds = now - prev_ts
+        
+        try:
+            clk_tck = os.sysconf('SC_CLK_TCK')
+        except (ValueError, OSError, AttributeError):
+            clk_tck = 100  # Fallback to standard x86_64 architecture tick metrics
+            
+        if elapsed_seconds > 0:
+            # Option A: Core tracking remains absolute; removed multiplier core count scale scaling
+            cpu_pct = ((total_tree_ticks - prev_total_ticks) / (elapsed_seconds * clk_tck)) * 100.0
                 
-        cpu_cache[pid] = (total_ticks, now)
-        return round(max(0.0, cpu_pct), 1)
-        
-    except (FileNotFoundError, IndexError, ValueError, OSError):
-        return 0.0
+    cpu_cache[pid] = (total_tree_ticks, now)
+    return round(max(0.0, cpu_pct), 1)
 
 def update_and_get_jobs():
     """Queries jobs from DB, verifies if Linux PIDs live, updates status safely across users."""
     if not os.path.exists(DB_PATH):
         return []
+        
+    # Take ONE global process snapshot before scanning database items
+    proc_snapshot = get_system_proc_snapshot()
         
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -76,19 +113,17 @@ def update_and_get_jobs():
         
         if status == '*RUNNING' and pid > 0:
             try:
-                os.kill(pid, 0) # Check if Linux process is alive
-                cpu = get_cpu_usage(pid)
+                os.kill(pid, 0) # Confirm if process or parent container is alive
+                cpu = get_cpu_usage(pid, proc_snapshot)
             except PermissionError:
-                # MULTI-USER FIX: Process is alive but owned by another user.
-                # Do not change database status. Still allowed to read CPU tick metrics.
-                cpu = get_cpu_usage(pid)
+                # MULTI-USER SAFETY: Process lives but belongs to another user.
+                # Do not move to OUTQ; calculate CPU using global tree snapshot metrics.
+                cpu = get_cpu_usage(pid, proc_snapshot)
             except ProcessLookupError:
-                # Process is genuinely dead. Safely move to OUTQ.
                 status = '*OUTQ'
                 cursor.execute("UPDATE active_jobs SET status = '*OUTQ' WHERE job_number = ?", (job_num,))
                 conn.commit()
             except OSError as e:
-                # Fallback check for older Python environments mapping errnos manually
                 if e.errno == errno.ESRCH:
                     status = '*OUTQ'
                     cursor.execute("UPDATE active_jobs SET status = '*OUTQ' WHERE job_number = ?", (job_num,))
@@ -110,7 +145,7 @@ def update_and_get_jobs():
     return updated_jobs
 
 def kill_job(job_num, pid):
-    """Executes Option 4 (End Job) by killing the target process group securely."""
+    """Executes Option 4 (End Job) securely handling multi-user permission constraints."""
     if pid > 0:
         try:
             pgid = os.getpgid(pid)
@@ -133,7 +168,7 @@ def kill_job(job_num, pid):
     return None
 
 def view_spool(stdscr, job_num):
-    """Executes Option 5 to view the spooled stdout text file."""
+    """Executes Option 5 to view the spooled text output file with full scroll controls."""
     spool_path = f"/var/lib/os400/splf/JOB_{job_num:06d}.txt"
     stdscr.clear()
     stdscr.refresh()
@@ -169,24 +204,30 @@ def view_spool(stdscr, job_num):
         
         if ch in (curses.KEY_F12, ord('q'), ord('Q'), ord('c'), ord('C'), 27):
             break
-        elif ch == curses.KEY_DOWN and current_line < len(lines) - (height - 4):
-            current_line += 1
-        elif ch == curses.KEY_UP and current_line > 0:
-            current_line -= 1
+        elif ch in (curses.KEY_DOWN, curses.KEY_NPAGE):
+            step = (height - 4) if ch == curses.KEY_NPAGE else 1
+            if current_line < len(lines) - (height - 4):
+                current_line = min(len(lines) - (height - 4), current_line + step)
+        elif ch in (curses.KEY_UP, curses.KEY_PPAGE):
+            step = (height - 4) if ch == curses.KEY_PPAGE else 1
+            if current_line > 0:
+                current_line = max(0, current_line - step)
 
 def draw_screen(stdscr):
     curses.start_color()
     curses.use_default_colors()
     curses.init_pair(1, curses.COLOR_GREEN, -1)   
     curses.init_pair(2, curses.COLOR_WHITE, -1)   
-    curses.init_pair(3, curses.COLOR_RED, -1)     # For showing permission errors standard across commands
+    curses.init_pair(3, curses.COLOR_RED, -1)     
     curses.init_pair(4, curses.COLOR_CYAN, -1)    
     
     stdscr.nodelay(True)
     stdscr.timeout(1000) 
     
-    inputs = {} 
+    # Subfile input accumulation mapping: raw_job_number -> user option typed
+    pending_options = {} 
     current_row_idx = 0  
+    scroll_top = 0
     error_msg = ""
     
     while True:
@@ -198,6 +239,19 @@ def draw_screen(stdscr):
         if current_row_idx >= len(jobs):
             current_row_idx = max(0, len(jobs) - 1)
         
+        # dynamic page bounds calculation (removes top details and bottoms for list viewport)
+        max_jobs_per_page = max(1, height - 13)
+        
+        # Frame boundary updates
+        if current_row_idx < scroll_top:
+            scroll_top = current_row_idx
+        elif current_row_idx >= scroll_top + max_jobs_per_page:
+            scroll_top = current_row_idx - max_jobs_per_page + 1
+            
+        if scroll_top > max(0, len(jobs) - max_jobs_per_page):
+            scroll_top = max(0, len(jobs) - max_jobs_per_page)
+        
+        # Headers Layout
         stdscr.addstr(0, 2, "Work with Active Jobs", curses.color_pair(1))
         stdscr.addstr(0, width - 24, "OS400-LINUX SYSTEM", curses.color_pair(1))
         
@@ -213,13 +267,20 @@ def draw_screen(stdscr):
         stdscr.addstr(7, 2, "Opt  Job/Subsys  User        Type    CPU %  Status    Command", curses.color_pair(1))
         stdscr.hline(8, 0, '-', width)
         
+        # Subfile Pagination Indicators
+        if len(jobs) > max_jobs_per_page:
+            if scroll_top + max_jobs_per_page < len(jobs):
+                stdscr.addstr(7, width - 12, "More...", curses.color_pair(4))
+            else:
+                stdscr.addstr(7, width - 12, "Bottom", curses.color_pair(4))
+
         row = 9
-        new_inputs = {}
-        for idx, job in enumerate(jobs):
-            if row >= height - 4: 
-                break 
-                
-            opt_val = inputs.get(idx, "")
+        cursor_coords = None
+        visible_jobs = jobs[scroll_top : scroll_top + max_jobs_per_page]
+        
+        for idx, job in enumerate(visible_jobs):
+            absolute_idx = scroll_top + idx
+            opt_val = pending_options.get(job['raw_num'], "")
             
             stdscr.addstr(row, 2, "[ ]", curses.color_pair(1))
             if opt_val:
@@ -232,27 +293,27 @@ def draw_screen(stdscr):
             stdscr.addstr(row, 49, f"{job['status']:10}", curses.color_pair(1 if job['status'] == '*RUNNING' else 2))
             stdscr.addstr(row, 59, f"{job['cmd'][:width-61]}", curses.color_pair(2))
             
-            new_inputs[idx] = { 'val': opt_val, 'y': row, 'x': 3, 'job': job }
+            if absolute_idx == current_row_idx:
+                cursor_coords = (row, 3)
+                
             row += 1
             
-        inputs = { k: v['val'] for k, v in new_inputs.items() }
-        
         if error_msg:
             stdscr.addstr(height - 3, 2, error_msg, curses.color_pair(3))
             
-        legend_str = "F3=Exit   F5=Refresh   F12=Cancel"
+        legend_str = "F3=Exit   F5=Refresh   F12=Cancel   PageUp/Dn=Roll"
         stdscr.addstr(height - 2, 2, legend_str, curses.color_pair(1))
         
-        if new_inputs and current_row_idx in new_inputs:
-            stdscr.move(new_inputs[current_row_idx]['y'], new_inputs[current_row_idx]['x'])
+        if cursor_coords:
+            stdscr.move(cursor_coords[0], cursor_coords[1])
         else:
             stdscr.move(height - 2, 2)
             
         stdscr.refresh()
-        
         ch = stdscr.getch()
+        
         if ch != -1:
-            error_msg = ""
+            error_msg = "" 
         
         if ch in (curses.KEY_F3, ord('q'), ord('Q'), ord('x'), ord('X'), 27):
             break
@@ -264,22 +325,35 @@ def draw_screen(stdscr):
         elif ch == curses.KEY_DOWN:
             if current_row_idx < len(jobs) - 1:
                 current_row_idx += 1
+        elif ch == curses.KEY_PPAGE: 
+            if current_row_idx > 0:
+                current_row_idx = max(0, current_row_idx - max_jobs_per_page)
+        elif ch == curses.KEY_NPAGE: 
+            if current_row_idx < len(jobs) - 1:
+                current_row_idx = min(len(jobs) - 1, current_row_idx + max_jobs_per_page)
         elif ch in (ord('4'), ord('5'), ord(' ')):
-            if jobs: 
+            if jobs and current_row_idx < len(jobs): 
+                target_job = jobs[current_row_idx]
                 char_str = " " if ch == ord(' ') else chr(ch)
-                inputs[current_row_idx] = char_str.strip()
+                
+                if char_str.strip() == "":
+                    pending_options.pop(target_job['raw_num'], None)
+                else:
+                    pending_options[target_job['raw_num']] = char_str
         elif ch == 10: 
-            for idx, info in new_inputs.items():
-                val = inputs.get(idx, "")
-                if val == "4":
-                    err = kill_job(info['job']['raw_num'], info['job']['pid'])
-                    if err:
-                        error_msg = err
-                elif val == "5":
-                    view_spool(stdscr, info['job']['raw_num'])
-                    stdscr.nodelay(True)
-                    stdscr.timeout(1000)
-            inputs = {}
+            # Process accumulated choices across all active pages
+            for job_num, val in list(pending_options.items()):
+                target_job = next((j for j in jobs if j['raw_num'] == job_num), None)
+                if target_job:
+                    if val == "4":
+                        err = kill_job(target_job['raw_num'], target_job['pid'])
+                        if err:
+                            error_msg = err
+                    elif val == "5":
+                        view_spool(stdscr, target_job['raw_num'])
+                        stdscr.nodelay(True)
+                        stdscr.timeout(1000)
+            pending_options = {}
 
 if __name__ == "__main__":
     curses.wrapper(draw_screen)
