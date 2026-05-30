@@ -23,7 +23,7 @@ sudo groupadd os400 (RHEL)
 
 sudo chown -R root:os400 /var/lib/os400  (RHEL)
 
-sudo usermod -G os400 "insert_username_here" (RHEL to add non-root users you want to run these commands) 
+sudo usermod -G os400 -a "insert_username_here" (RHEL to add non-root users you want to run these commands) 
 
 # 3. Apply SGID and group read/write privileges
 sudo chmod -R 775 /var/lib/os400 
