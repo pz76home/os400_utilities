@@ -4,83 +4,36 @@ import sys
 import curses
 import sqlite3
 import time
+import errno
 
 DB_PATH = "/var/lib/os400/qsys.db"
 
-# 1. Cache: Module-level dict storing (prev_total_ticks, prev_ts) per PID
+# Cache: Module-level dict storing (prev_total_ticks, prev_ts) per PID
 cpu_cache = {}
 
-def get_process_tree_ticks():
-    """Scans /proc once to build a snapshot of the active process tree 
-    and returns a map of total ticks for every process family branch.
-    """
-    proc_tree = {}  # pid -> {'ppid': ppid, 'ticks': ticks}
-    try:
-        for entry in os.listdir('/proc'):
-            if entry.isdigit():
-                try:
-                    with open(f"/proc/{entry}/stat", "r") as f:
-                        content = f.read().strip()
-                    r_paren = content.rfind(')')
-                    if r_paren == -1:
-                        continue
-                    stat_line = content[r_paren + 2:].split()
-                    
-                    pid = int(entry)
-                    ppid = int(stat_line[1])       # Field 4: PPID
-                    utime = float(stat_line[11])   # Field 14: utime
-                    stime = float(stat_line[12])   # Field 15: stime
-                    
-                    proc_tree[pid] = {'ppid': ppid, 'ticks': utime + stime}
-                except (FileNotFoundError, IndexError, ValueError, OSError):
-                    continue
-    except OSError:
-        return {}
-
-    # Map parents to direct children
-    child_map = {}
-    for pid, info in proc_tree.items():
-        ppid = info['ppid']
-        if ppid not in child_map:
-            child_map[ppid] = []
-        child_map[ppid].append(pid)
-
-    # Accumulate ticks for target process and all descendants
-    branch_totals = {}
-    for target_pid in proc_tree:
-        total_ticks = 0.0
-        stack = [target_pid]
-        visited = set()
-        
-        while stack:
-            curr = stack.pop()
-            if curr in visited:
-                continue
-            visited.add(curr)
-            if curr in proc_tree:
-                total_ticks += proc_tree[curr]['ticks']
-            if curr in child_map:
-                stack.extend(child_map[curr])
-                
-        branch_totals[target_pid] = total_ticks
-
-    return branch_totals
-
-# 2. get_cpu_usage(pid) using explicit delta calculation across process branch trees
-def get_cpu_usage(pid, tree_ticks):
-    """Calculates CPU% over an elapsed delta window using aggregated tree statistics."""
-    if pid <= 0 or pid not in tree_ticks:
+def get_cpu_usage(pid):
+    """Calculates CPU% over an elapsed delta window normalized for system core count."""
+    if pid <= 0:
         return 0.0
         
     global cpu_cache
     now = time.time()
     
-    # 3. Error handling: Gracefully handle missing or inaccessible proc nodes
     try:
-        # Sum of parent ticks + all its working child descendants
-        total_ticks = tree_ticks[pid]
+        # Read /proc/<pid>/stat (world-readable on standard Linux environments)
+        with open(f"/proc/{pid}/stat", "r") as f:
+            stat_content = f.read().strip()
+            
+        right_parenthesis = stat_content.rfind(')')
+        if right_parenthesis == -1:
+            return 0.0
+            
+        stat_line = stat_content[right_parenthesis + 2:].split()
         
-        # Look up previous values in cpu_cache
+        utime = float(stat_line[11])
+        stime = float(stat_line[12])
+        total_ticks = utime + stime
+        
         prev = cpu_cache.get(pid)
         cpu_pct = 0.0
         
@@ -91,27 +44,19 @@ def get_cpu_usage(pid, tree_ticks):
             
             if elapsed_seconds > 0:
                 cores = os.cpu_count() or 1
-                # Standardized system resource calculation formula split by core constraints
-                cpu_pct = (((total_ticks - prev_total_ticks) / (elapsed_seconds * clk_tck)) * 100.0) / cores
+                cpu_pct = (((total_ticks - prev_total_ticks) / (elapsed_seconds * clk_tck)) * 100.0) * cores
                 
-        # Store the new (total_ticks, now) in cpu_cache
         cpu_cache[pid] = (total_ticks, now)
-        
-        # Round to 1 decimal place and return
         return round(max(0.0, cpu_pct), 1)
         
     except (FileNotFoundError, IndexError, ValueError, OSError):
-        # On error return 0.0 but do not clear other cache entries
         return 0.0
 
 def update_and_get_jobs():
-    """Queries jobs from DB, verifies if Linux PIDs live, updates status."""
+    """Queries jobs from DB, verifies if Linux PIDs live, updates status safely across users."""
     if not os.path.exists(DB_PATH):
         return []
         
-    # Generate the aggregate tick frames before entering individual job loop
-    tree_ticks = get_process_tree_ticks()
-    
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
@@ -132,11 +77,22 @@ def update_and_get_jobs():
         if status == '*RUNNING' and pid > 0:
             try:
                 os.kill(pid, 0) # Check if Linux process is alive
-                cpu = get_cpu_usage(pid, tree_ticks)
-            except OSError:
+                cpu = get_cpu_usage(pid)
+            except PermissionError:
+                # MULTI-USER FIX: Process is alive but owned by another user.
+                # Do not change database status. Still allowed to read CPU tick metrics.
+                cpu = get_cpu_usage(pid)
+            except ProcessLookupError:
+                # Process is genuinely dead. Safely move to OUTQ.
                 status = '*OUTQ'
                 cursor.execute("UPDATE active_jobs SET status = '*OUTQ' WHERE job_number = ?", (job_num,))
                 conn.commit()
+            except OSError as e:
+                # Fallback check for older Python environments mapping errnos manually
+                if e.errno == errno.ESRCH:
+                    status = '*OUTQ'
+                    cursor.execute("UPDATE active_jobs SET status = '*OUTQ' WHERE job_number = ?", (job_num,))
+                    conn.commit()
                 
         if status in ('*RUNNING', '*JOBQ'):
             updated_jobs.append({
@@ -154,14 +110,18 @@ def update_and_get_jobs():
     return updated_jobs
 
 def kill_job(job_num, pid):
-    """Executes Option 4 (End Job) by killing the target process group."""
+    """Executes Option 4 (End Job) by killing the target process group securely."""
     if pid > 0:
         try:
             pgid = os.getpgid(pid)
             os.kill(-pgid, 9)
+        except PermissionError:
+            return "CPF1389: Not authorized to clear or end another user's job."
         except OSError:
             try:
                 os.kill(pid, 9)
+            except PermissionError:
+                return "CPF1389: Not authorized to clear or end another user's job."
             except OSError:
                 pass
             
@@ -170,6 +130,7 @@ def kill_job(job_num, pid):
     cursor.execute("UPDATE active_jobs SET status = '*OUTQ' WHERE job_number = ?", (job_num,))
     conn.commit()
     conn.close()
+    return None
 
 def view_spool(stdscr, job_num):
     """Executes Option 5 to view the spooled stdout text file."""
@@ -179,8 +140,11 @@ def view_spool(stdscr, job_num):
     
     lines = []
     if os.path.exists(spool_path):
-        with open(spool_path, "r") as f:
-            lines = f.readlines()
+        try:
+            with open(spool_path, "r") as f:
+                lines = f.readlines()
+        except OSError:
+            lines = ["CPF2204: Not authorized to access this job's spool file."]
     else:
         lines = ["CPF2204: Spool file not found or not generated yet."]
 
@@ -215,6 +179,7 @@ def draw_screen(stdscr):
     curses.use_default_colors()
     curses.init_pair(1, curses.COLOR_GREEN, -1)   
     curses.init_pair(2, curses.COLOR_WHITE, -1)   
+    curses.init_pair(3, curses.COLOR_RED, -1)     # For showing permission errors standard across commands
     curses.init_pair(4, curses.COLOR_CYAN, -1)    
     
     stdscr.nodelay(True)
@@ -222,6 +187,7 @@ def draw_screen(stdscr):
     
     inputs = {} 
     current_row_idx = 0  
+    error_msg = ""
     
     while True:
         stdscr.clear()
@@ -250,7 +216,7 @@ def draw_screen(stdscr):
         row = 9
         new_inputs = {}
         for idx, job in enumerate(jobs):
-            if row >= height - 3: 
+            if row >= height - 4: 
                 break 
                 
             opt_val = inputs.get(idx, "")
@@ -271,6 +237,9 @@ def draw_screen(stdscr):
             
         inputs = { k: v['val'] for k, v in new_inputs.items() }
         
+        if error_msg:
+            stdscr.addstr(height - 3, 2, error_msg, curses.color_pair(3))
+            
         legend_str = "F3=Exit   F5=Refresh   F12=Cancel"
         stdscr.addstr(height - 2, 2, legend_str, curses.color_pair(1))
         
@@ -282,6 +251,8 @@ def draw_screen(stdscr):
         stdscr.refresh()
         
         ch = stdscr.getch()
+        if ch != -1:
+            error_msg = ""
         
         if ch in (curses.KEY_F3, ord('q'), ord('Q'), ord('x'), ord('X'), 27):
             break
@@ -301,7 +272,9 @@ def draw_screen(stdscr):
             for idx, info in new_inputs.items():
                 val = inputs.get(idx, "")
                 if val == "4":
-                    kill_job(info['job']['raw_num'], info['job']['pid'])
+                    err = kill_job(info['job']['raw_num'], info['job']['pid'])
+                    if err:
+                        error_msg = err
                 elif val == "5":
                     view_spool(stdscr, info['job']['raw_num'])
                     stdscr.nodelay(True)
