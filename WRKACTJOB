@@ -44,7 +44,7 @@ def get_cpu_usage(pid):
             
             if elapsed_seconds > 0:
                 cores = os.cpu_count() or 1
-                cpu_pct = (((total_ticks - prev_total_ticks) / (elapsed_seconds * clk_tck)) * 100.0) * cores
+                cpu_pct = (((total_ticks - prev_total_ticks) / (elapsed_seconds * clk_tck)) * 100.0) # Remove the core multiplier
                 
         cpu_cache[pid] = (total_ticks, now)
         return round(max(0.0, cpu_pct), 1)
