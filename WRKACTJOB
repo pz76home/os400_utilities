@@ -49,7 +49,7 @@ def get_system_proc_snapshot():
 def get_cpu_usage(pid, snapshot):
     """
     Calculates CPU% over an elapsed delta window by aggregating the ticks
-    of the parent process AND any of its active child processes (Fixes Ubuntu dash vs RHEL bash).
+    of the parent process AND ALL of its deep descendants (children, grandchildren, workers).
     """
     if pid <= 0:
         return 0.0
@@ -57,16 +57,29 @@ def get_cpu_usage(pid, snapshot):
     global cpu_cache
     now = time.time()
     
-    # Aggregate ticks for the parent job PID and all its immediate sub-children
-    total_tree_ticks = 0.0
-    if pid in snapshot:
-        total_tree_ticks += snapshot[pid]['ticks']
+    # 1. Map every parent PID to its direct children from our global snapshot
+    ppid_to_children = {}
+    for c_pid, info in snapshot.items():
+        ppid_to_children.setdefault(info['ppid'], []).append(c_pid)
         
-    for child_pid, info in snapshot.items():
-        if info['ppid'] == pid:
-            total_tree_ticks += info['ticks']
+    # 2. Level-order traversal (BFS) to gather ALL family tree descendants
+    family_tree_pids = [pid]
+    queue = [pid]
+    
+    while queue:
+        curr_parent = queue.pop(0)
+        if curr_parent in ppid_to_children:
+            for child in ppid_to_children[curr_parent]:
+                family_tree_pids.append(child)
+                queue.append(child) # Push child to queue to search for grandchildren
+                
+    # 3. Sum up ticks across the entire gathered family tree
+    total_tree_ticks = 0.0
+    for p in family_tree_pids:
+        if p in snapshot:
+            total_tree_ticks += snapshot[p]['ticks']
             
-    # Process delta timeline calculations
+    # 4. Standard timeline delta window calculation
     prev = cpu_cache.get(pid)
     cpu_pct = 0.0
     
@@ -80,7 +93,7 @@ def get_cpu_usage(pid, snapshot):
             clk_tck = 100  # Fallback to standard x86_64 architecture tick metrics
             
         if elapsed_seconds > 0:
-            # Option A: Core tracking remains absolute; removed multiplier core count scale scaling
+            # Option A: Core tracking remains absolute
             cpu_pct = ((total_tree_ticks - prev_total_ticks) / (elapsed_seconds * clk_tck)) * 100.0
                 
     cpu_cache[pid] = (total_tree_ticks, now)
@@ -239,7 +252,7 @@ def draw_screen(stdscr):
         if current_row_idx >= len(jobs):
             current_row_idx = max(0, len(jobs) - 1)
         
-        # dynamic page bounds calculation (removes top details and bottoms for list viewport)
+        # dynamic page bounds calculation
         max_jobs_per_page = max(1, height - 13)
         
         # Frame boundary updates
