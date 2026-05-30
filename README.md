@@ -5,9 +5,9 @@ I have brought the basic functionality of QBATCH or running background BATCH job
 
 SBMJOB will allow you to submit a command, script or binary as a background job. 
 
-WRKACTJOB will allow you view, list and end the running jobs.
+WRKACTJOB will allow you view, list and end the "ACTIVE" running jobs.
 
-WRKSBMJOB will allow you view, list and end the all submitted jobs.
+WRKSBMJOB will allow you view, list and end the ALL submitted jobs.
 
 Also WRKSBMJOB is a good way to also clean up your output (SPOOL) files and clean the jobs from the database.
 
