@@ -43,7 +43,7 @@ Make it executable with chmod +x WRKSBMJOB, and place it in a shared directory l
 
 YOU WILL NEED TO RUN A SBMJOB FIRST TO CREATE THE SQLITE DB TABLE THAT THE OTHER COMMANDS RELY ON
 
-# 4. Example usage
+# 5. Example usage
 SBMJOB 'CMD(sleep 15) JOB(QUICKJOB)'
 
 SBMJOB 'CMD(ping -c 30 127.0.0.1) JOB(NETPING)'
@@ -51,7 +51,7 @@ SBMJOB 'CMD(ping -c 30 127.0.0.1) JOB(NETPING)'
 SBMJOB 'CMD(sha256sum /dev/zero) JOB(CPULOOP)'
 
 
-# 4. Troubleshooting jobs submitted by SBMJOB 
+# Troubleshooting jobs submitted by SBMJOB 
 python3 -c "import sqlite3; conn=sqlite3.connect('/var/lib/os400/qsys.db'); c=conn.cursor(); c.execute('SELECT * FROM active_jobs'); print(c.fetchall())"
 
 # Things I would like to do
