@@ -54,6 +54,13 @@ SBMJOB 'CMD(sha256sum /dev/zero) JOB(CPULOOP)'
 # Troubleshooting jobs submitted by SBMJOB 
 python3 -c "import sqlite3; conn=sqlite3.connect('/var/lib/os400/qsys.db'); c=conn.cursor(); c.execute('SELECT * FROM active_jobs'); print(c.fetchall())"
 
+# Permission issues with multiple concurrent users
+If you want to run this with multiple concurrent users, you will have to run the below commands again after the first SBMJOB. As the sqlite database is not created until the first SBMJOB.
+
+sudo chmod -R 775 /var/lib/os400 
+
+sudo chmod g+s /var/lib/os400 /var/lib/os400/splf
+
 # Things I would like to do
 
 Create QCMD to have jobs run interactively, displaying as QINTER jobs in WRKACTJOB. (These would run at the OS default nice values)
