@@ -37,6 +37,24 @@ def init_environment():
         )
     """)
     conn.commit()
+        # Check and fix group permissions on the database file to ensure RWX (mode 7)
+    try:
+        stat_info = os.stat(DB_PATH)
+        current_mode = stat_info.st_mode
+        # Extract just the permission bits (last 9 bits)
+        current_perms = current_mode & 0o777
+        
+        # Check if group has full permissions (bits 6-8 should be 7)
+        group_perms = (current_perms >> 3) & 0o7
+        
+        if group_perms != 0o7:
+            # Set group to rwx (7) while preserving other permissions
+            # Keep owner and other perms, set group to 7
+            new_mode = (current_perms & 0o707) | 0o070
+            os.chmod(DB_PATH, new_mode)
+            print(f"Updated {DB_PATH} group permissions to rwx (mode 7)")
+    except OSError as e:
+        print(f"Warning: Could not verify/modify group permissions on {DB_PATH}: {e}")
     conn.close()
 
 def parse_cl_args(args_list):
