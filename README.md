@@ -54,7 +54,7 @@ SBMJOB 'CMD(sha256sum /dev/zero) JOB(CPULOOP)'
 # Troubleshooting jobs submitted by SBMJOB 
 python3 -c "import sqlite3; conn=sqlite3.connect('/var/lib/os400/qsys.db'); c=conn.cursor(); c.execute('SELECT * FROM active_jobs'); print(c.fetchall())"
 
-# Permission issues with multiple concurrent users
+# Permission issues with multiple concurrent users (Ignore, now addressed in commit 07c2556)
 If you want to run this with multiple concurrent users, you will have to run the below commands again after the first SBMJOB. As the sqlite database is not created until the first SBMJOB.
 
 sudo chmod -R 775 /var/lib/os400 
