@@ -331,7 +331,11 @@ def draw_screen(stdscr):
             stdscr.addstr(row, 7, f"{job['name'][:8]:9}", curses.color_pair(2))
             stdscr.addstr(row, 17, f"{job['subsys'][:6]:7}", curses.color_pair(2)) # Subsys output mapping
             stdscr.addstr(row, 25, f"{job['user'][:8]:9}", curses.color_pair(2))
-            stdscr.addstr(row, 35, "BCH", curses.color_pair(4))
+            
+            # Conditional Logic: Show INT for QINTER sessions, BCH for batch jobs
+            job_type = "INT" if "QINTER" in job['subsys'].upper() else "BCH"
+            stdscr.addstr(row, 35, job_type, curses.color_pair(4))
+            
             stdscr.addstr(row, 40, f"{job['pty']:3}", curses.color_pair(2)) 
             stdscr.addstr(row, 45, f"{job['cpu']:5.1f}", curses.color_pair(2)) 
             stdscr.addstr(row, 52, f"{job['status']:10}", curses.color_pair(1 if job['status'] == '*RUNNING' else 2)) 
@@ -344,7 +348,7 @@ def draw_screen(stdscr):
             
         if error_msg:
             stdscr.addstr(height - 3, 2, error_msg, curses.color_pair(3))
-            
+         
         legend_str = "F3=Exit   F5=Refresh   F12=Cancel   PageUp/Dn=Roll"
         stdscr.addstr(height - 2, 2, legend_str, curses.color_pair(1))
         
@@ -352,7 +356,7 @@ def draw_screen(stdscr):
             stdscr.move(cursor_coords[0], cursor_coords[1])
         else:
             stdscr.move(height - 2, 2)
-            
+             
         stdscr.refresh()
         ch = stdscr.getch()
         
