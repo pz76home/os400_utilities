@@ -112,17 +112,35 @@ def update_and_get_jobs():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    cursor.execute("""
-        SELECT job_number, job_name, user, pid, status, command 
-        FROM active_jobs 
-        WHERE status IN ('*RUNNING', '*JOBQ') 
-        ORDER BY job_number DESC
-    """)
-    jobs = cursor.fetchall()
+    # Defensive execution: Check if the 'subsys' field exists in the active schema
+    try:
+        cursor.execute("""
+            SELECT job_number, job_name, user, pid, status, command, subsys 
+            FROM active_jobs 
+            WHERE status IN ('*RUNNING', '*JOBQ') 
+            ORDER BY job_number DESC
+        """)
+        jobs = cursor.fetchall()
+        has_subsys_field = True
+    except sqlite3.OperationalError:
+        # Fallback query if DB migration has not run yet
+        cursor.execute("""
+            SELECT job_number, job_name, user, pid, status, command 
+            FROM active_jobs 
+            WHERE status IN ('*RUNNING', '*JOBQ') 
+            ORDER BY job_number DESC
+        """)
+        jobs = cursor.fetchall()
+        has_subsys_field = False
     
     updated_jobs = []
     for job in jobs:
-        job_num, job_name, user, pid, status, command = job
+        if has_subsys_field:
+            job_num, job_name, user, pid, status, command, subsys = job
+        else:
+            job_num, job_name, user, pid, status, command = job
+            subsys = "QBATCH"  # Safe backward-compatibility default
+            
         padded_num = f"{job_num:06d}"
         cpu = 0.0
         pty = 0  # Default priority fallback for non-running status elements
@@ -159,6 +177,7 @@ def update_and_get_jobs():
                 'status': status,
                 'cpu': cpu,
                 'pty': pty,
+                'subsys': subsys,
                 'cmd': command
             })
             
@@ -285,8 +304,8 @@ def draw_screen(stdscr):
         stdscr.addstr(4, 2, "Type options, press Enter.", curses.color_pair(1))
         stdscr.addstr(5, 4, "4=End job   5=Work with spool file", curses.color_pair(4))
         
-        # Recalculated header layout to accommodate the Pty column bounds beautifully
-        stdscr.addstr(7, 2, "Opt  Job/Subsys   User          Type Pty   CPU %  Status     Command", curses.color_pair(1))
+        # Optimized layout splits 'Job' and 'Subsys' into clean columns
+        stdscr.addstr(7, 2, "Opt  Job      Subsys  User      Type Pty  CPU % Status     Command", curses.color_pair(1))
         stdscr.hline(8, 0, '-', width)
         
         # Subfile Pagination Indicators
@@ -308,13 +327,15 @@ def draw_screen(stdscr):
             if opt_val:
                 stdscr.addstr(row, 3, opt_val, curses.color_pair(2))
                 
-            stdscr.addstr(row, 7, f"{job['name'][:10]:12}", curses.color_pair(2))
-            stdscr.addstr(row, 20, f"{job['user'][:10]:12}", curses.color_pair(2))
-            stdscr.addstr(row, 34, "BCH", curses.color_pair(4))
-            stdscr.addstr(row, 39, f"{job['pty']:3}", curses.color_pair(2)) # New Pty layout slot
-            stdscr.addstr(row, 45, f"{job['cpu']:5.1f}", curses.color_pair(2)) # Shifted to 45
-            stdscr.addstr(row, 52, f"{job['status']:10}", curses.color_pair(1 if job['status'] == '*RUNNING' else 2)) # Shifted to 52
-            stdscr.addstr(row, 63, f"{job['cmd'][:width-65]}", curses.color_pair(2)) # Shifted to 63
+            # Compact layout padding keeping text readable on narrow terminal frames
+            stdscr.addstr(row, 7, f"{job['name'][:8]:9}", curses.color_pair(2))
+            stdscr.addstr(row, 17, f"{job['subsys'][:6]:7}", curses.color_pair(2)) # Subsys output mapping
+            stdscr.addstr(row, 25, f"{job['user'][:8]:9}", curses.color_pair(2))
+            stdscr.addstr(row, 35, "BCH", curses.color_pair(4))
+            stdscr.addstr(row, 40, f"{job['pty']:3}", curses.color_pair(2)) 
+            stdscr.addstr(row, 45, f"{job['cpu']:5.1f}", curses.color_pair(2)) 
+            stdscr.addstr(row, 52, f"{job['status']:10}", curses.color_pair(1 if job['status'] == '*RUNNING' else 2)) 
+            stdscr.addstr(row, 64, f"{job['cmd'][:width-66]}", curses.color_pair(2)) 
             
             if absolute_idx == current_row_idx:
                 cursor_coords = (row, 3)
