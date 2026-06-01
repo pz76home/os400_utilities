@@ -21,17 +21,35 @@ def update_and_get_submitted_jobs():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    cursor.execute("""
-        SELECT job_number, job_name, user, pid, status, command 
-        FROM active_jobs 
-        WHERE user = ?
-        ORDER BY job_number DESC
-    """, (CURRENT_USER,))
-    jobs = cursor.fetchall()
+    # Defensive execution: Check if the 'subsys' field exists in the active schema
+    try:
+        cursor.execute("""
+            SELECT job_number, job_name, user, pid, status, command, subsys 
+            FROM active_jobs 
+            WHERE user = ?
+            ORDER BY job_number DESC
+        """, (CURRENT_USER,))
+        jobs = cursor.fetchall()
+        has_subsys_field = True
+    except sqlite3.OperationalError:
+        # Fallback query if DB migration has not run yet
+        cursor.execute("""
+            SELECT job_number, job_name, user, pid, status, command 
+            FROM active_jobs 
+            WHERE user = ?
+            ORDER BY job_number DESC
+        """, (CURRENT_USER,))
+        jobs = cursor.fetchall()
+        has_subsys_field = False
     
     updated_jobs = []
     for job in jobs:
-        job_num, job_name, user, pid, status, command = job
+        if has_subsys_field:
+            job_num, job_name, user, pid, status, command, subsys = job
+        else:
+            job_num, job_name, user, pid, status, command = job
+            subsys = "QBATCH"  # Safe backward-compatibility default
+            
         padded_num = f"{job_num:06d}"
         
         # Verify if running processes died unexpectedly while we weren't looking
@@ -50,6 +68,7 @@ def update_and_get_submitted_jobs():
             'user': user,
             'pid': pid,
             'status': status,
+            'subsys': subsys,
             'cmd': command
         })
             
@@ -57,7 +76,8 @@ def update_and_get_submitted_jobs():
     return updated_jobs
 
 def purge_job_and_spool(job_num, pid, status):
-    """Executes Option 4 (Delete). Explicitly blocks deletion if the job is 
+    """Executes Option 4 (Delete).
+    Explicitly blocks deletion if the job is 
     actively running, returning an error message string.
     """
     if status == '*RUNNING':
@@ -70,7 +90,7 @@ def purge_job_and_spool(job_num, pid, status):
             os.remove(spool_path)
         except OSError:
             pass 
-            
+          
     # Purge the job entry completely from the SQLite architecture
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -136,10 +156,11 @@ def draw_screen(stdscr):
     stdscr.nodelay(True)
     stdscr.timeout(1000) 
     
-    # CRITICAL FIX: Track inputs by UNIQUE job number, completely decoupled from visual arrays
+    # Track inputs by UNIQUE job number, completely decoupled from visual arrays
     pending_options = {} 
     current_row_idx = 0  
-    scroll_top = 0      
+    scroll_top = 0   
+    
     error_msg = "" 
     
     while True:
@@ -174,7 +195,8 @@ def draw_screen(stdscr):
             stdscr.addstr(4, 2, "Type options, press Enter.", curses.color_pair(1))
             stdscr.addstr(5, 4, "4=Delete/Purge   5=Display spool file", curses.color_pair(4))
             
-            stdscr.addstr(7, 2, "Opt  Job Number  Job/Subsys  User        Status    Command", curses.color_pair(1))
+            # Refined layout structure splits out "Job Name" and "Subsys" columns clearly
+            stdscr.addstr(7, 2, "Opt  Job Number  Job        Subsys  User    Status    Command", curses.color_pair(1))
             stdscr.hline(8, 0, '-', width)
             
             # Pagination Flags
@@ -198,13 +220,15 @@ def draw_screen(stdscr):
                 if opt_val:
                     stdscr.addstr(row, 3, opt_val, curses.color_pair(2))
                     
-                stdscr.addstr(row, 7, f"{job['num']:12}", curses.color_pair(2))
-                stdscr.addstr(row, 20, f"{job['name'][:10]:12}", curses.color_pair(2))
-                stdscr.addstr(row, 32, f"{job['user'][:10]:12}", curses.color_pair(2))
+                # Precise spatial padding prevents field overlap on squeezed dimensions
+                stdscr.addstr(row, 7, f"{job['num']:10}", curses.color_pair(2))
+                stdscr.addstr(row, 19, f"{job['name'][:10]:10}", curses.color_pair(2))
+                stdscr.addstr(row, 30, f"{job['subsys'][:6]:7}", curses.color_pair(2)) # Subsys Data Slot
+                stdscr.addstr(row, 38, f"{job['user'][:7]:7}", curses.color_pair(2))
                 
                 status_color = curses.color_pair(1) if job['status'] == '*RUNNING' else curses.color_pair(2)
-                stdscr.addstr(row, 44, f"{job['status']:10}", status_color)
-                stdscr.addstr(row, 56, f"{job['cmd'][:width-58]}", curses.color_pair(2))
+                stdscr.addstr(row, 46, f"{job['status']:10}", status_color)
+                stdscr.addstr(row, 58, f"{job['cmd'][:width-60]}", curses.color_pair(2))
                 
                 if absolute_idx == current_row_idx:
                     cursor_coords = (row, 3)
