@@ -185,7 +185,6 @@ def main_menu(stdscr):
                 cmd_to_run = current_input
                 current_input = ""
                 execute_interactive_command(stdscr, history_lines, cmd_to_run)
-                break  # Exit the interface as soon as the command completes execution
         elif ch in (curses.KEY_BACKSPACE, 127, 8):
             if len(current_input) > 0:
                 current_input = current_input[:-1]
