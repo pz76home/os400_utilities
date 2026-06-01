@@ -100,7 +100,8 @@ def submit_job(job_name, cmd_str):
             shell=True,
             stdout=spool_file,
             stderr=subprocess.STDOUT,
-            start_new_session=True  # Detaches process group from current terminal
+            start_new_session=True,  # Detaches process group from current terminal
+            preexec_fn=lambda: os.nice(10)  # Set nice value to 10 for lower priority
         )
         
         pid = process.pid

@@ -14,7 +14,7 @@ cpu_cache = {}
 def get_system_proc_snapshot():
     """
     Scans /proc exactly once per refresh cycle.
-    Returns a dictionary mapping: pid -> {'ppid': parent_pid, 'ticks': total_ticks}
+    Returns a dictionary mapping: pid -> {'ppid': parent_pid, 'ticks': total_ticks, 'nice': nice_value}
     """
     snapshot = {}
     try:
@@ -35,10 +35,12 @@ def get_system_proc_snapshot():
                     ppid = int(stat_line[1])       # Field 4 in raw stat
                     utime = float(stat_line[11])   # Field 14 in raw stat
                     stime = float(stat_line[12])   # Field 15 in raw stat
+                    nice = int(stat_line[16])      # Field 19 in raw stat (Nice priority)
                     
                     snapshot[pid] = {
                         'ppid': ppid,
-                        'ticks': utime + stime
+                        'ticks': utime + stime,
+                        'nice': nice
                     }
                 except (FileNotFoundError, PermissionError, IndexError, ValueError):
                     continue
@@ -123,8 +125,13 @@ def update_and_get_jobs():
         job_num, job_name, user, pid, status, command = job
         padded_num = f"{job_num:06d}"
         cpu = 0.0
+        pty = 0  # Default priority fallback for non-running status elements
         
         if status == '*RUNNING' and pid > 0:
+            # Extract live priority from single-pass snapshot mapping
+            if pid in proc_snapshot:
+                pty = proc_snapshot[pid]['nice']
+                
             try:
                 os.kill(pid, 0) # Confirm if process or parent container is alive
                 cpu = get_cpu_usage(pid, proc_snapshot)
@@ -141,7 +148,7 @@ def update_and_get_jobs():
                     status = '*OUTQ'
                     cursor.execute("UPDATE active_jobs SET status = '*OUTQ' WHERE job_number = ?", (job_num,))
                     conn.commit()
-                
+             
         if status in ('*RUNNING', '*JOBQ'):
             updated_jobs.append({
                 'num': padded_num,
@@ -151,6 +158,7 @@ def update_and_get_jobs():
                 'pid': pid,
                 'status': status,
                 'cpu': cpu,
+                'pty': pty,
                 'cmd': command
             })
             
@@ -277,7 +285,8 @@ def draw_screen(stdscr):
         stdscr.addstr(4, 2, "Type options, press Enter.", curses.color_pair(1))
         stdscr.addstr(5, 4, "4=End job   5=Work with spool file", curses.color_pair(4))
         
-        stdscr.addstr(7, 2, "Opt  Job/Subsys  User        Type    CPU %  Status    Command", curses.color_pair(1))
+        # Recalculated header layout to accommodate the Pty column bounds beautifully
+        stdscr.addstr(7, 2, "Opt  Job/Subsys   User          Type Pty   CPU %  Status     Command", curses.color_pair(1))
         stdscr.hline(8, 0, '-', width)
         
         # Subfile Pagination Indicators
@@ -302,9 +311,10 @@ def draw_screen(stdscr):
             stdscr.addstr(row, 7, f"{job['name'][:10]:12}", curses.color_pair(2))
             stdscr.addstr(row, 20, f"{job['user'][:10]:12}", curses.color_pair(2))
             stdscr.addstr(row, 34, "BCH", curses.color_pair(4))
-            stdscr.addstr(row, 42, f"{job['cpu']:5.1f}", curses.color_pair(2))
-            stdscr.addstr(row, 49, f"{job['status']:10}", curses.color_pair(1 if job['status'] == '*RUNNING' else 2))
-            stdscr.addstr(row, 59, f"{job['cmd'][:width-61]}", curses.color_pair(2))
+            stdscr.addstr(row, 39, f"{job['pty']:3}", curses.color_pair(2)) # New Pty layout slot
+            stdscr.addstr(row, 45, f"{job['cpu']:5.1f}", curses.color_pair(2)) # Shifted to 45
+            stdscr.addstr(row, 52, f"{job['status']:10}", curses.color_pair(1 if job['status'] == '*RUNNING' else 2)) # Shifted to 52
+            stdscr.addstr(row, 63, f"{job['cmd'][:width-65]}", curses.color_pair(2)) # Shifted to 63
             
             if absolute_idx == current_row_idx:
                 cursor_coords = (row, 3)
