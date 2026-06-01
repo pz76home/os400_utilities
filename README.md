@@ -5,6 +5,8 @@ I AM ENCOURAGING EVERYONE TO CLONE OR COPY FROM THE DEVELOPMENT BRANCH AT THE MO
 One thing I used to love about the AS400 (or IBMi) was the job management.
 I have brought the basic functionality of QBATCH or running background BATCH jobs to Linux.
 
+QCMD will allow you to run interactive commands at a higher priority (Development Branch clone only, you will need all other commands from the same branch for this to work properly)
+
 SBMJOB will allow you to submit a command, script or binary as a background job. 
 
 WRKACTJOB will allow you view, list and end the "ACTIVE" running jobs.
