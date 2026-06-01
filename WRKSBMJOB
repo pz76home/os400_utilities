@@ -24,7 +24,7 @@ def update_and_get_submitted_jobs():
     # Defensive execution: Check if the 'subsys' field exists in the active schema
     try:
         cursor.execute("""
-            SELECT job_number, job_name, user, pid, status, command, subsys 
+            SELECT job_number, job_name, user, pid, status, command, subsys, submitted_at 
             FROM active_jobs 
             WHERE user = ?
             ORDER BY job_number DESC
@@ -34,7 +34,7 @@ def update_and_get_submitted_jobs():
     except sqlite3.OperationalError:
         # Fallback query if DB migration has not run yet
         cursor.execute("""
-            SELECT job_number, job_name, user, pid, status, command 
+            SELECT job_number, job_name, user, pid, status, command, submitted_at 
             FROM active_jobs 
             WHERE user = ?
             ORDER BY job_number DESC
@@ -45,17 +45,27 @@ def update_and_get_submitted_jobs():
     updated_jobs = []
     for job in jobs:
         if has_subsys_field:
-            job_num, job_name, user, pid, status, command, subsys = job
+            job_num, job_name, user, pid, status, command, subsys, submitted_at = job
         else:
-            job_num, job_name, user, pid, status, command = job
+            job_num, job_name, user, pid, status, command, submitted_at = job
             subsys = "QBATCH"  # Safe backward-compatibility default
             
         padded_num = f"{job_num:06d}"
         
+        # Parse the default SQLite timestamp string (e.g., "2026-06-01 13:58:50")
+        if submitted_at:
+            parts = str(submitted_at).split()
+            if len(parts) == 2:
+                job_date, job_time = parts[0], parts[1]
+            else:
+                job_date, job_time = str(submitted_at), ""
+        else:
+            job_date, job_time = "-", "-"
+        
         # Verify if running processes died unexpectedly while we weren't looking
         if status == '*RUNNING' and pid > 0:
             try:
-                os.kill(pid, 0) 
+                os.kill(pid, 0)
             except OSError:
                 status = '*OUTQ'
                 cursor.execute("UPDATE active_jobs SET status = '*OUTQ' WHERE job_number = ?", (job_num,))
@@ -69,6 +79,8 @@ def update_and_get_submitted_jobs():
             'pid': pid,
             'status': status,
             'subsys': subsys,
+            'date': job_date,
+            'time': job_time,
             'cmd': command
         })
             
@@ -195,8 +207,9 @@ def draw_screen(stdscr):
             stdscr.addstr(4, 2, "Type options, press Enter.", curses.color_pair(1))
             stdscr.addstr(5, 4, "4=Delete/Purge   5=Display spool file", curses.color_pair(4))
             
-            # Refined layout structure splits out "Job Name" and "Subsys" columns clearly
-            stdscr.addstr(7, 2, "Opt  Job Number  Job        Subsys  User    Status    Command", curses.color_pair(1))
+            # Realigned Grid Header Layout
+            header_str = "Opt  Job Number  Job       Subsys  User     Status    Date       Time     Command"
+            stdscr.addstr(7, 2, header_str, curses.color_pair(1))
             stdscr.hline(8, 0, '-', width)
             
             # Pagination Flags
@@ -213,22 +226,28 @@ def draw_screen(stdscr):
             for idx, job in enumerate(visible_jobs):
                 absolute_idx = scroll_top + idx
                 
-                # Fetch options from database key rather than array screen rows
+                # Fetch choices via safe structural dictionary keys
                 opt_val = pending_options.get(job['raw_num'], "")
                 
                 stdscr.addstr(row, 2, "[ ]", curses.color_pair(1))
                 if opt_val:
                     stdscr.addstr(row, 3, opt_val, curses.color_pair(2))
-                    
-                # Precise spatial padding prevents field overlap on squeezed dimensions
-                stdscr.addstr(row, 7, f"{job['num']:10}", curses.color_pair(2))
+                
+                # Precise matrix mapping to align data cells cleanly under correct headers
+                stdscr.addstr(row, 7, f"{job['num']:11}", curses.color_pair(2))
                 stdscr.addstr(row, 19, f"{job['name'][:10]:10}", curses.color_pair(2))
-                stdscr.addstr(row, 30, f"{job['subsys'][:6]:7}", curses.color_pair(2)) # Subsys Data Slot
-                stdscr.addstr(row, 38, f"{job['user'][:7]:7}", curses.color_pair(2))
+                stdscr.addstr(row, 30, f"{job['subsys'][:7]:7}", curses.color_pair(2))
+                stdscr.addstr(row, 38, f"{job['user'][:8]:8}", curses.color_pair(2))
                 
                 status_color = curses.color_pair(1) if job['status'] == '*RUNNING' else curses.color_pair(2)
-                stdscr.addstr(row, 46, f"{job['status']:10}", status_color)
-                stdscr.addstr(row, 58, f"{job['cmd'][:width-60]}", curses.color_pair(2))
+                stdscr.addstr(row, 47, f"{job['status']:9}", status_color)
+                
+                # Render parsed Date and Time parameters
+                stdscr.addstr(row, 57, f"{job['date']:10}", curses.color_pair(2))
+                stdscr.addstr(row, 68, f"{job['time']:8}", curses.color_pair(2))
+                
+                if width > 78:
+                    stdscr.addstr(row, 77, f"{job['cmd'][:width-78]}", curses.color_pair(2))
                 
                 if absolute_idx == current_row_idx:
                     cursor_coords = (row, 3)
@@ -253,7 +272,7 @@ def draw_screen(stdscr):
 
         ch = stdscr.getch()
         if ch != -1:
-            error_msg = "" # Wipe out error message notifications on interaction
+            error_msg = ""  # Clear user notification strings on interaction
         
         if ch in (curses.KEY_F3, ord('q'), ord('Q'), ord('x'), ord('X'), 27):
             break
@@ -281,9 +300,7 @@ def draw_screen(stdscr):
                 else:
                     pending_options[target_job['raw_num']] = char_str
         elif ch == 10: # Enter Key
-            # Process all accumulated commands across all pages in a single loop
             for job_num, val in list(pending_options.items()):
-                # Locate the job entry safely inside the primary array
                 target_job = next((j for j in jobs if j['raw_num'] == job_num), None)
                 if target_job and val in ("4", "5"):
                     if val == "4":
@@ -298,7 +315,7 @@ def draw_screen(stdscr):
                         view_spool(stdscr, target_job['raw_num'])
                         stdscr.nodelay(True)
                         stdscr.timeout(1000)
-            pending_options = {} # Purge command staging state once executed completely
+            pending_options = {} 
 
 if __name__ == "__main__":
     try:
