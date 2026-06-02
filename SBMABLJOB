@@ -175,8 +175,8 @@ if __name__ == "__main__":
     if not cl_params:
         print("SBMABLJOB - Batch Submit Ansible Engine Command Parameters")
         print("\nUsage Examples:")
-        print("  SBMABLJOB PLAYBOOK(deploy.yml) HOSTS(prod) VLTFILE('/var/secure/vpass.txt')")
-        print("  SBMABLJOB MOD(ping) HOSTS(all) INV('hosts.ini')")
+        print("  SBMABLJOB 'PLAYBOOK(deploy.yml) HOSTS(prod) VLTFILE('/var/secure/vpass.txt')'")
+        print("  SBMABLJOB 'MOD(ping) HOSTS(all) INV('hosts.ini')'")
         sys.exit(1)
         
     submit_ansible_job(cl_params)
