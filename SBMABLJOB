@@ -171,7 +171,10 @@ if __name__ == "__main__":
     cl_params = parse_cl_args(sys.argv[1:])
     if not cl_params:
         print("Usage Examples:")
-        print("  sbmabljob PLAYBOOK(site.yml) INV(hosts.ini) HOSTS(webservers)")
+        print("  SBMABLJOB 'PLAYBOOK(site.yml) INV(hosts.ini) HOSTS(webservers)'")
+        print("  SBMABLJOB 'PLAYBOOK(site.yml) EXTVARS('ansible_connection=local,app_version=2.0')'")
+        print("  SBMABLJOB 'PLAYBOOK(deploy.yml) HOSTS(prod) VLTFILE('/var/secure/vpass.txt')'")
+        print("  SBMABLJOB 'MOD(ping) HOSTS(all) INV('hosts.ini')'")
         sys.exit(1)
         
     submit_ansible_job(cl_params)
