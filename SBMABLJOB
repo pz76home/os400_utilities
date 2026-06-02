@@ -6,12 +6,10 @@ import sqlite3
 import subprocess
 import getpass
 
-# System-wide global shared paths matching the native OS/400 architecture
 DB_PATH = "/var/lib/os400/qsys.db"
 SPOOL_DIR = "/var/lib/os400/splf"
 
 def init_environment():
-    """Ensures the global tracking tables and spool directories exist with appropriate permissions."""
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     os.makedirs(SPOOL_DIR, exist_ok=True)
     
@@ -35,13 +33,11 @@ def init_environment():
     conn.close()
 
 def parse_cl_args(args_list):
-    """Parses standard OS/400 Control Language positional or keyword tokens."""
     full_str = " ".join(args_list)
     matches = re.findall(r'(\w+)\((.*?)\)', full_str)
     return {k.upper(): v.strip("'\"") for k, v in matches}
 
 def build_ansible_command(params):
-    """Assembles parameters into a valid non-interactive background command string."""
     playbook = params.get("PLAYBOOK", "")
     mod = params.get("MOD", "")
     args = params.get("ARGS", "")
@@ -49,6 +45,7 @@ def build_ansible_command(params):
     hosts = params.get("HOSTS", "")
     become = params.get("BECOME", "").upper()
     bmethod = params.get("BMETHOD", "")
+    extvars = params.get("EXTVARS", "") # NEW: Explicit keyword hook
     check = params.get("CHECK", "").upper()
     vault = params.get("VAULT", "")
     key = params.get("KEY", "")
@@ -67,7 +64,6 @@ def build_ansible_command(params):
     else:
         return None, "CPF0001: Either PLAYBOOK() or MOD() must be specified."
 
-    # Process inventory configurations
     if inv:
         cmd_parts.extend(["-i", inv])
     elif hosts and playbook:
@@ -76,38 +72,38 @@ def build_ansible_command(params):
         else:
             cmd_parts.extend(["-i", f"{hosts},"])
 
-    # Privilege escalation bindings
     if become in ("*YES", "Y", "YES"):
         cmd_parts.append("-b")
         if bmethod:
             cmd_parts.extend(["--become-method", bmethod])
 
-    # Simulation controls
+    # NEW: Safe parsing loop for comma separated extra CLI parameters
+    if extvars:
+        for item in extvars.split(","):
+            if item.strip():
+                cmd_parts.extend(["-e", f"'{item.strip()}'"])
+
     if check in ("*YES", "Y", "YES"):
         cmd_parts.append("-C")
 
-    # Cryptography and authorization handles
     if vault:
         cmd_parts.extend(["--vault-id", vault])
 
     if key:
         cmd_parts.extend(["--private-key", key])
 
-    # Safe background vault decryption hook
     if vltfile:
         cmd_parts.extend(["--vault-password-file", vltfile])
 
     return " ".join(cmd_parts), None
 
 def submit_ansible_job(params):
-    """Forks the execution process as a decoupled background daemon process."""
     username = getpass.getuser()
     raw_cmd, err = build_ansible_command(params)
     if err:
         print(err)
         sys.exit(1)
 
-    # Automatically derive the 10-character OS/400 compatible Job Name
     if "JOB" in params:
         job_name = params["JOB"][:10].upper()
     elif params.get("PLAYBOOK"):
@@ -132,7 +128,6 @@ def submit_ansible_job(params):
         except OSError:
             pass
 
-        # Impose environments optimized for background logs serialization
         ansible_env = os.environ.copy()
         ansible_env["PYTHONUNBUFFERED"] = "1"
         ansible_env["ANSIBLE_FORCE_COLOR"] = "0"
@@ -141,9 +136,10 @@ def submit_ansible_job(params):
             for item in params["ENV"].split(","):
                 if "=" in item:
                     k, v = item.split("=", 1)
-                    ansible_env[k.strip()] = v.strip()
+                    # Automatically fix lowercase configurations in the environment block
+                    k_upper = k.strip().upper() if k.strip().lower().startswith("ansible_") else k.strip()
+                    ansible_env[k_upper] = v.strip()
 
-        # Detach into a daemon worker inside the background QBATCH system matrix
         process = subprocess.Popen(
             raw_cmd,
             shell=True,
@@ -173,8 +169,8 @@ if __name__ == "__main__":
     init_environment()
     cl_params = parse_cl_args(sys.argv[1:])
     if not cl_params:
-        print("SBMABLJOB - Batch Submit Ansible Engine Command Parameters")
-        print("\nUsage Examples:")
+        print("Usage Examples:")
+        print("  SBMABLJOB 'PLAYBOOK(site.yml) EXTVARS('ansible_connection=local,app_version=2.0')'")
         print("  SBMABLJOB 'PLAYBOOK(deploy.yml) HOSTS(prod) VLTFILE('/var/secure/vpass.txt')'")
         print("  SBMABLJOB 'MOD(ping) HOSTS(all) INV('hosts.ini')'")
         sys.exit(1)

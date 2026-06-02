@@ -21,11 +21,12 @@ FIELDS = [
     {"label": "Use Become? (Y/N) . . .", "key": "BECOME", "val": "N"},
     {"label": "Become Method . . . . .", "key": "BMETHOD", "val": "sudo"},
     {"label": "Extra Env Variables . .", "key": "ENV", "val": ""},
+    {"label": "Ansible Extra Vars (-e) .", "key": "EXTVARS", "val": ""}, # NEW: Handles ansible_connection=local
     {"label": "Check / Dry Run? (Y/N) .", "key": "CHECK", "val": "N"},
     {"label": "Vault ID String / Path .", "key": "VAULT", "val": ""},
     {"label": "Private Key File Path .", "key": "KEY", "val": ""},
-    {"label": "Ask Vault Pass? (Y/N) . .", "key": "ASKVAULT", "val": "N"}, # NEW
-    {"label": "Vault Password File . . .", "key": "VLTFILE", "val": ""},  # NEW
+    {"label": "Ask Vault Pass? (Y/N) . .", "key": "ASKVAULT", "val": "N"},
+    {"label": "Vault Password File . . .", "key": "VLTFILE", "val": ""},
 ]
 
 def draw_prompt_screen(stdscr, current_field_idx, history_lines):
@@ -38,7 +39,6 @@ def draw_prompt_screen(stdscr, current_field_idx, history_lines):
     stdscr.addstr(2, 2, f"User: {CURRENT_USER:<10}", curses.color_pair(1))
     stdscr.hline(3, 0, '-', width)
 
-    # Render Entry Form Fields
     form_start_row = 4
     for idx, field in enumerate(FIELDS):
         stdscr.addstr(form_start_row + idx, 2, field["label"], curses.color_pair(1))
@@ -50,7 +50,6 @@ def draw_prompt_screen(stdscr, current_field_idx, history_lines):
 
     stdscr.hline(form_start_row + len(FIELDS) + 1, 0, '-', width)
     
-    # Bottom History Logger Workspace Area
     history_start_row = form_start_row + len(FIELDS) + 2
     max_history_rows = height - history_start_row - 2
     visible_history = history_lines[-max_history_rows:] if len(history_lines) > max_history_rows else history_lines
@@ -89,6 +88,12 @@ def run_interactive_ansible(stdscr, history_lines):
         if params["BMETHOD"]:
             cmd_parts.extend(["--become-method", params["BMETHOD"]])
 
+    # NEW: Loop through comma-separated extra vars and safely assign individual -e parameters
+    if params["EXTVARS"]:
+        for item in params["EXTVARS"].split(","):
+            if item.strip():
+                cmd_parts.extend(["-e", f"'{item.strip()}'"])
+
     if params["CHECK"].upper() in ("Y", "YES"):
         cmd_parts.append("-C")
 
@@ -98,7 +103,6 @@ def run_interactive_ansible(stdscr, history_lines):
     if params["KEY"]:
         cmd_parts.extend(["--private-key", params["KEY"]])
 
-    # NEW: Vault password parameter insertions
     if params["ASKVAULT"].upper() in ("Y", "YES"):
         cmd_parts.append("--ask-vault-pass")
 
@@ -135,11 +139,11 @@ def run_interactive_ansible(stdscr, history_lines):
             for item in params["ENV"].split(","):
                 if "=" in item:
                     k, v = item.split("=", 1)
-                    ansible_env[k.strip()] = v.strip()
+                    # Automatically enforce uppercase formatting if user attempts to inject 
+                    # runtime engine modifiers directly into environment space instead of using -e
+                    k_upper = k.strip().upper() if k.strip().lower().startswith("ansible_") else k.strip()
+                    ansible_env[k_upper] = v.strip()
 
-        # If ask-vault-pass is enabled, avoid piping stdout completely via loop or 
-        # it strips down the standard TTY pass input hook response.
-        # Check if password hook interaction is requested:
         is_interactive_prompt = params["ASKVAULT"].upper() in ("Y", "YES")
 
         process = subprocess.Popen(
@@ -156,7 +160,6 @@ def run_interactive_ansible(stdscr, history_lines):
         conn.commit()
 
         if not is_interactive_prompt:
-            # Standard unbuffered text log extraction
             for line in process.stdout:
                 clean_line = "".join(c for c in line if c.isprintable() or c.isspace()).rstrip('\n\r')
                 spool_file.write(line)
@@ -165,10 +168,8 @@ def run_interactive_ansible(stdscr, history_lines):
                 draw_prompt_screen(stdscr, -1, history_lines)
             process.wait()
         else:
-            # If prompt required, temporarily drop curses controls to allow native prompt visibility hooks
             curses.endwin()
             process.wait()
-            # Reinitialise screen once verification loop finishes
             stdscr = curses.initscr()
             stdscr.refresh()
             history_lines.append("[Interactive Terminal Session Returned to Control Unit Layout]")
