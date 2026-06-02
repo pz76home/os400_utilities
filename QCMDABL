@@ -21,7 +21,7 @@ FIELDS = [
     {"label": "Use Become? (Y/N) . . .", "key": "BECOME", "val": "N"},
     {"label": "Become Method . . . . .", "key": "BMETHOD", "val": "sudo"},
     {"label": "Extra Env Variables . .", "key": "ENV", "val": ""},
-    {"label": "Ansible Extra Vars (-e) .", "key": "EXTVARS", "val": ""}, # NEW: Handles ansible_connection=local
+    {"label": "Ansible Extra Vars (-e) .", "key": "EXTVARS", "val": ""},
     {"label": "Check / Dry Run? (Y/N) .", "key": "CHECK", "val": "N"},
     {"label": "Vault ID String / Path .", "key": "VAULT", "val": ""},
     {"label": "Private Key File Path .", "key": "KEY", "val": ""},
@@ -78,8 +78,11 @@ def run_interactive_ansible(stdscr, history_lines):
         history_lines.append("ERROR: Must supply either a Playbook Path or an Ansible Module.")
         return
 
+    # FIXED: Unified handling of Inventory vs Limit restrictions
     if params["INV"]:
         cmd_parts.extend(["-i", params["INV"]])
+        if params["HOSTS"] and params["PLAYBOOK"]:
+            cmd_parts.extend(["--limit", params["HOSTS"]])
     elif params["HOSTS"] and params["PLAYBOOK"]:
         cmd_parts.extend(["-i", f"{params['HOSTS']},"])
 
@@ -88,7 +91,6 @@ def run_interactive_ansible(stdscr, history_lines):
         if params["BMETHOD"]:
             cmd_parts.extend(["--become-method", params["BMETHOD"]])
 
-    # NEW: Loop through comma-separated extra vars and safely assign individual -e parameters
     if params["EXTVARS"]:
         for item in params["EXTVARS"].split(","):
             if item.strip():
@@ -139,8 +141,6 @@ def run_interactive_ansible(stdscr, history_lines):
             for item in params["ENV"].split(","):
                 if "=" in item:
                     k, v = item.split("=", 1)
-                    # Automatically enforce uppercase formatting if user attempts to inject 
-                    # runtime engine modifiers directly into environment space instead of using -e
                     k_upper = k.strip().upper() if k.strip().lower().startswith("ansible_") else k.strip()
                     ansible_env[k_upper] = v.strip()
 

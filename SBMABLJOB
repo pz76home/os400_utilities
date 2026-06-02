@@ -45,7 +45,7 @@ def build_ansible_command(params):
     hosts = params.get("HOSTS", "")
     become = params.get("BECOME", "").upper()
     bmethod = params.get("BMETHOD", "")
-    extvars = params.get("EXTVARS", "") # NEW: Explicit keyword hook
+    extvars = params.get("EXTVARS", "")
     check = params.get("CHECK", "").upper()
     vault = params.get("VAULT", "")
     key = params.get("KEY", "")
@@ -64,8 +64,11 @@ def build_ansible_command(params):
     else:
         return None, "CPF0001: Either PLAYBOOK() or MOD() must be specified."
 
+    # FIXED: Unified handling of Inventory vs Limit restrictions
     if inv:
         cmd_parts.extend(["-i", inv])
+        if hosts and playbook:
+            cmd_parts.extend(["--limit", hosts])
     elif hosts and playbook:
         if "," in hosts:
             cmd_parts.extend(["-i", f"{hosts},"])
@@ -77,7 +80,6 @@ def build_ansible_command(params):
         if bmethod:
             cmd_parts.extend(["--become-method", bmethod])
 
-    # NEW: Safe parsing loop for comma separated extra CLI parameters
     if extvars:
         for item in extvars.split(","):
             if item.strip():
@@ -136,7 +138,6 @@ def submit_ansible_job(params):
             for item in params["ENV"].split(","):
                 if "=" in item:
                     k, v = item.split("=", 1)
-                    # Automatically fix lowercase configurations in the environment block
                     k_upper = k.strip().upper() if k.strip().lower().startswith("ansible_") else k.strip()
                     ansible_env[k_upper] = v.strip()
 
@@ -170,9 +171,7 @@ if __name__ == "__main__":
     cl_params = parse_cl_args(sys.argv[1:])
     if not cl_params:
         print("Usage Examples:")
-        print("  SBMABLJOB 'PLAYBOOK(site.yml) EXTVARS('ansible_connection=local,app_version=2.0')'")
-        print("  SBMABLJOB 'PLAYBOOK(deploy.yml) HOSTS(prod) VLTFILE('/var/secure/vpass.txt')'")
-        print("  SBMABLJOB 'MOD(ping) HOSTS(all) INV('hosts.ini')'")
+        print("  sbmabljob PLAYBOOK(site.yml) INV(hosts.ini) HOSTS(webservers)")
         sys.exit(1)
         
     submit_ansible_job(cl_params)
