@@ -58,7 +58,7 @@ def draw_prompt_screen(stdscr, current_field_idx, history_lines):
         if idx < max_history_rows:
             stdscr.addstr(history_start_row + idx, 2, line[:width-4], curses.color_pair(2))
 
-    stdscr.addstr(height - 1, 2, "F3=Exit   F12=Cancel   Enter=Execute Playbook", curses.color_pair(1))
+    stdscr.addstr(height - 1, 2, "F3=Exit   F12=Cancel   Enter=Execute Playbook   Arrows=Navigate", curses.color_pair(1))
     stdscr.refresh()
 
 def run_interactive_ansible(stdscr, history_lines):
@@ -78,7 +78,6 @@ def run_interactive_ansible(stdscr, history_lines):
         history_lines.append("ERROR: Must supply either a Playbook Path or an Ansible Module.")
         return
 
-    # FIXED: Unified handling of Inventory vs Limit restrictions
     if params["INV"]:
         cmd_parts.extend(["-i", params["INV"]])
         if params["HOSTS"] and params["PLAYBOOK"]:
@@ -194,33 +193,66 @@ def main_menu(stdscr):
     stdscr.keypad(True)
     
     current_field_idx = 0
+    # Track position within the string of the active field
+    field_cursor_pos = len(FIELDS[current_field_idx]["val"])
     history_lines = ["Ansible interactive shell environment initiated inside QINTER."]
 
     while True:
         draw_prompt_screen(stdscr, current_field_idx, history_lines)
         
+        # Position terminal cursor precisely inside active field input matrix
         form_start_row = 4
-        val_len = len(FIELDS[current_field_idx]["val"])
-        stdscr.move(form_start_row + current_field_idx, 29 + min(val_len, 39))
+        stdscr.move(form_start_row + current_field_idx, 29 + field_cursor_pos)
         stdscr.refresh()
 
         ch = stdscr.getch()
         if ch in (curses.KEY_F3, curses.KEY_F12, 27):
             break
+        
+        # Vertical navigation (Resets cursor position to the end of the newly selected field)
         elif ch == curses.KEY_UP:
             current_field_idx = (current_field_idx - 1) % len(FIELDS)
-        elif ch in (curses.KEY_DOWN, 9): 
+            field_cursor_pos = len(FIELDS[current_field_idx]["val"])
+        elif ch in (curses.KEY_DOWN, 9): # Down arrow or Tab
             current_field_idx = (current_field_idx + 1) % len(FIELDS)
+            field_cursor_pos = len(FIELDS[current_field_idx]["val"])
+            
+        # Horizontal navigation (Bounded by text boundaries)
+        elif ch == curses.KEY_LEFT:
+            if field_cursor_pos > 0:
+                field_cursor_pos -= 1
+        elif ch == curses.KEY_RIGHT:
+            if field_cursor_pos < len(FIELDS[current_field_idx]["val"]):
+                field_cursor_pos += 1
+                
+        # Execution
         elif ch in (10, 13): 
             draw_prompt_screen(stdscr, -1, history_lines)
             run_interactive_ansible(stdscr, history_lines)
+            field_cursor_pos = len(FIELDS[current_field_idx]["val"])
+            
+        # Deletion at cursor (Backspace)
         elif ch in (curses.KEY_BACKSPACE, 127, 8):
             curr_val = FIELDS[current_field_idx]["val"]
-            if len(curr_val) > 0:
-                FIELDS[current_field_idx]["val"] = curr_val[:-1]
+            if field_cursor_pos > 0:
+                # Slice out character behind cursor position
+                FIELDS[current_field_idx]["val"] = curr_val[:field_cursor_pos - 1] + curr_val[field_cursor_pos:]
+                field_cursor_pos -= 1
+                
+        # Deletion at cursor (Delete key)
+        elif ch == curses.KEY_DC:
+            curr_val = FIELDS[current_field_idx]["val"]
+            if field_cursor_pos < len(curr_val):
+                # Slice out character directly on the cursor position
+                FIELDS[current_field_idx]["val"] = curr_val[:field_cursor_pos] + curr_val[field_cursor_pos + 1:]
+                
+        # Character Insertion at cursor position
         elif 32 <= ch <= 126:
-            if len(FIELDS[current_field_idx]["val"]) < 38:
-                FIELDS[current_field_idx]["val"] += chr(ch)
+            curr_val = FIELDS[current_field_idx]["val"]
+            if len(curr_val) < 38:
+                # Splice typed character into string matrix
+                FIELDS[current_field_idx]["val"] = curr_val[:field_cursor_pos] + chr(ch) + curr_val[field_cursor_pos:]
+                field_cursor_pos += 1
 
 if __name__ == "__main__":
     try:
