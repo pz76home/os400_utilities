@@ -69,7 +69,7 @@ sudo chmod -R 775 /var/lib/os400
 
 sudo chmod g+s /var/lib/os400 /var/lib/os400/splf
 
-# Things I would like to do
+# Things I would like to do (The below is featured, mostly working and being tested in the development Branch)
 
 Create QCMD to have jobs run interactively, displaying as QINTER jobs in WRKACTJOB. (These would run at the OS default nice values)
 
