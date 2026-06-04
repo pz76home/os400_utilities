@@ -42,6 +42,20 @@ def generate_c64_dir():
         lines.append("?DISK DRIVE NOT READY ERROR")
     return lines
 
+def is_python_file(filename):
+    """
+    Inspects a file to determine if it's a Python script, either by 
+    checking its extension or reading the first line for a python shebang.
+    """
+    if filename.endswith(".py"):
+        return True
+    try:
+        with open(filename, 'r', errors='ignore') as f:
+            first_line = f.readline()
+            return first_line.startswith("#!") and "python" in first_line
+    except Exception:
+        return False
+
 def execute_program(filename, run_args, history_lines, stdscr):
     """
     Executes the loaded script or binary, streaming stdout/stderr 
@@ -58,7 +72,23 @@ def execute_program(filename, run_args, history_lines, stdscr):
         history_lines.append("?FILE NOT FOUND ERROR")
         return
 
-    # FIXED LOGIC: Ensure local directory execution prefix is always used for binaries/scripts
+    # ===================================================================
+    # INTERACTIVE ARCADE MODE PATCH (UPDATED)
+    # Detects Python via extension OR shebang directive. Suspends the 
+    # C64 environment to allow interactive scripts to run full-screen.
+    # ===================================================================
+    if is_python_file(filename):
+        curses.endwin()  # Temporarily close the shell's curses configuration
+        try:
+            # Explicitly invoke via system python interpreter for maximum stability
+            subprocess.run([sys.executable, filename] + run_args)
+        except Exception as e:
+            print(f"EXECUTION ERROR: {e}")
+        stdscr.refresh()  # Restore the shell's layout upon game/script exit
+        return
+    # ===================================================================
+
+    # Ensure local directory execution prefix is always used for binaries/scripts
     cmd = [f"./{filename}"]
     if filename.endswith(".sh"):
         cmd = ["bash", filename]
@@ -96,7 +126,7 @@ def execute_program(filename, run_args, history_lines, stdscr):
             history_lines.append(f"?RE-RUN ERROR CODE: {return_code}")
             
     except KeyboardInterrupt:
-        # CAPTURES CTRL+C: Safely kills the hanging bash script and returns to BASIC cleanly
+        # CAPTURES CTRL+C: Safely kills hanging scripts and returns to BASIC cleanly
         if process:
             process.terminate()
             try:
