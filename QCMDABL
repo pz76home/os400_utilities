@@ -29,6 +29,18 @@ FIELDS = [
     {"label": "Vault Password File . . .", "key": "VLTFILE", "val": ""},
 ]
 
+def parse_cl_args(args_list):
+    """
+    Parses OS/400 Control Language syntax strings passed from bash shell.
+    Example: PLAYBOOK('/home/paulz/test.yaml') CHECK(Y)
+    Returns a dictionary of uppercase keywords and their sanitized values.
+    """
+    full_str = " ".join(args_list)
+    # Extract keywords and capture contents inside parentheses
+    matches = re.findall(r'(\w+)\((.*?)\)', full_str)
+    # Return mapping with internal single/double quotes stripped out
+    return {k.upper(): v.strip("'\"") for k, v in matches}
+
 def draw_prompt_screen(stdscr, current_field_idx, history_lines):
     stdscr.clear()
     height, width = stdscr.getmaxyx()
@@ -193,14 +205,13 @@ def main_menu(stdscr):
     stdscr.keypad(True)
     
     current_field_idx = 0
-    # Track position within the string of the active field
+    # Dynamic Tracking: Set to length of field val (handles text injected via CLI)
     field_cursor_pos = len(FIELDS[current_field_idx]["val"])
     history_lines = ["Ansible interactive shell environment initiated inside QINTER."]
 
     while True:
         draw_prompt_screen(stdscr, current_field_idx, history_lines)
         
-        # Position terminal cursor precisely inside active field input matrix
         form_start_row = 4
         stdscr.move(form_start_row + current_field_idx, 29 + field_cursor_pos)
         stdscr.refresh()
@@ -209,15 +220,15 @@ def main_menu(stdscr):
         if ch in (curses.KEY_F3, curses.KEY_F12, 27):
             break
         
-        # Vertical navigation (Resets cursor position to the end of the newly selected field)
+        # Vertical Navigation
         elif ch == curses.KEY_UP:
             current_field_idx = (current_field_idx - 1) % len(FIELDS)
             field_cursor_pos = len(FIELDS[current_field_idx]["val"])
-        elif ch in (curses.KEY_DOWN, 9): # Down arrow or Tab
+        elif ch in (curses.KEY_DOWN, 9): 
             current_field_idx = (current_field_idx + 1) % len(FIELDS)
             field_cursor_pos = len(FIELDS[current_field_idx]["val"])
             
-        # Horizontal navigation (Bounded by text boundaries)
+        # Horizontal Navigation
         elif ch == curses.KEY_LEFT:
             if field_cursor_pos > 0:
                 field_cursor_pos -= 1
@@ -231,30 +242,35 @@ def main_menu(stdscr):
             run_interactive_ansible(stdscr, history_lines)
             field_cursor_pos = len(FIELDS[current_field_idx]["val"])
             
-        # Deletion at cursor (Backspace)
+        # Deletion (Backspace)
         elif ch in (curses.KEY_BACKSPACE, 127, 8):
             curr_val = FIELDS[current_field_idx]["val"]
             if field_cursor_pos > 0:
-                # Slice out character behind cursor position
                 FIELDS[current_field_idx]["val"] = curr_val[:field_cursor_pos - 1] + curr_val[field_cursor_pos:]
                 field_cursor_pos -= 1
                 
-        # Deletion at cursor (Delete key)
+        # Deletion (Delete Key)
         elif ch == curses.KEY_DC:
             curr_val = FIELDS[current_field_idx]["val"]
             if field_cursor_pos < len(curr_val):
-                # Slice out character directly on the cursor position
                 FIELDS[current_field_idx]["val"] = curr_val[:field_cursor_pos] + curr_val[field_cursor_pos + 1:]
                 
-        # Character Insertion at cursor position
+        # Character Insertion
         elif 32 <= ch <= 126:
             curr_val = FIELDS[current_field_idx]["val"]
             if len(curr_val) < 38:
-                # Splice typed character into string matrix
                 FIELDS[current_field_idx]["val"] = curr_val[:field_cursor_pos] + chr(ch) + curr_val[field_cursor_pos:]
                 field_cursor_pos += 1
 
 if __name__ == "__main__":
+    # 1. Parse custom argument inputs passed from the bash shell layout
+    cl_params = parse_cl_args(sys.argv[1:])
+    
+    # 2. Overwrite default field values with matches extracted from CLI tokens
+    for field in FIELDS:
+        if field["key"] in cl_params:
+            field["val"] = cl_params[field["key"]]
+            
     try:
         curses.wrapper(main_menu)
     except KeyboardInterrupt:
