@@ -45,7 +45,8 @@ def generate_c64_dir():
 def execute_program(filename, run_args, history_lines, stdscr):
     """
     Executes the loaded script or binary, streaming stdout/stderr 
-    directly to the blue screen matrix in real-time.
+    directly to the blue screen matrix. Safely intercepts Ctrl+C 
+    to simulate a classic Commodore BREAK sequence.
     """
     if not filename:
         history_lines.append("?MISSING PROGRAM ERROR")
@@ -57,15 +58,15 @@ def execute_program(filename, run_args, history_lines, stdscr):
         history_lines.append("?FILE NOT FOUND ERROR")
         return
 
-    # Determine runtime wrapper
+    # FIXED LOGIC: Ensure local directory execution prefix is always used for binaries/scripts
     cmd = [f"./{filename}"]
     if filename.endswith(".sh"):
         cmd = ["bash", filename]
         
-    # Append trailing command line arguments passed via the RUN command
     if run_args:
         cmd.extend(run_args)
 
+    process = None
     try:
         process = subprocess.Popen(
             cmd,
@@ -88,17 +89,26 @@ def execute_program(filename, run_args, history_lines, stdscr):
                 # Dynamic refresh mid-stream
                 render_c64_screen(stdscr, history_lines, "", 0)
                 
-        process.wait()
+        return_code = process.wait()
+        
+        # If the script finishes with an explicit error code, report it
+        if return_code != 0:
+            history_lines.append(f"?RE-RUN ERROR CODE: {return_code}")
+            
+    except KeyboardInterrupt:
+        # CAPTURES CTRL+C: Safely kills the hanging bash script and returns to BASIC cleanly
+        if process:
+            process.terminate()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                
+        history_lines.append("")
+        history_lines.append("?BREAK ERROR") # Classic C64 breakout response
+        
     except Exception as e:
         history_lines.append(f"?OS EXECUTION ERROR: {str(e).upper()}")
-
-def missing_shebang(filename):
-    """Checks if a binary requires direct dot-slash invocation."""
-    try:
-        with open(filename, 'rb') as f:
-            return f.read(2) != b'#!'
-    except:
-        return False
 
 def render_c64_screen(stdscr, history_lines, input_buffer, cursor_pos):
     stdscr.clear()
@@ -270,7 +280,7 @@ def main_c64_shell(stdscr):
                             file_lines = f.readlines()
                         bas_line = 10
                         for fl in file_lines:
-                            history_lines.append(f"{bas_line} {fl.rstrip('.r_nan').strip().upper()}")
+                            history_lines.append(f"{bas_line} {fl.rstrip('\r\n').strip().upper()}")
                             bas_line += 10
                     except Exception as e:
                         history_lines.append(f"?CANNOT READ FILE: {str(e).upper()}")
@@ -282,7 +292,7 @@ def main_c64_shell(stdscr):
                 trailing_args = parts[1:] if len(parts) > 1 else []
                 
                 if current_loaded_file == "$":
-                    history_lines.append("?READY.")
+                    history_lines.append("READY.")
                 else:
                     execute_program(current_loaded_file, trailing_args, history_lines, stdscr)
                     history_lines.append("READY.")
