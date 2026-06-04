@@ -15,6 +15,10 @@ WRKSBMJOB will allow you view, list and end ALL submitted jobs.
 
 Also WRKSBMJOB is a good way to also clean up your output (SPOOL) files and clean the jobs from the database.
 
+(Experimental Ansible Command) QCMDABL "PLAYBOOK('../ansible/test.yaml') INV('../ansible/hosts.ini') HOSTS('localserver') EXTVARS('ansible_connection=local') CHECK(N)"
+
+(Experimental Ansible Command) SBMABLJOB with no parameters/arguments will provide some examples.
+
 This was vibe coded with Google Gemini with alot of prompting and testing to get this to the now working functionality. 
 
 # 1. Create the system-wide framework directories
