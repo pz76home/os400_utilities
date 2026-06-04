@@ -42,7 +42,8 @@ def main(stdscr):
     victory = False
 
     while True:
-        stdscr.clear()
+        # FIX: Changed from clear() to erase() to completely eliminate flicker
+        stdscr.erase()
         max_y, max_x = stdscr.getmaxyx()
         player_y = max_y - 3
 
@@ -51,7 +52,6 @@ def main(stdscr):
         hud_right = "PRESS Q TO QUIT"
         
         stdscr.addstr(1, 2, hud_left, curses.color_pair(1))
-        # Safely right-align the quit reminder if the screen is wide enough
         if max_x > len(hud_left) + len(hud_right) + 6:
             stdscr.addstr(1, max_x - len(hud_right) - 2, hud_right, curses.color_pair(1))
             
@@ -105,7 +105,6 @@ def main(stdscr):
             if player_x < max_x - player_width - 2:
                 player_x += 2
         elif ch == ord(' '):
-            # Enforce max 3 active beams on screen to prevent spamming
             if len(lasers) < 3:
                 lasers.append({'x': player_x + player_width // 2, 'y': player_y - 1})
 
@@ -116,7 +115,6 @@ def main(stdscr):
                 lasers.remove(laser)
                 continue
             
-            # Cross-reference beam location against alive invaders
             for inv in active_invaders:
                 spr_len = len(inv['sprite'])
                 if inv['x'] <= laser['x'] < inv['x'] + spr_len and laser['y'] == inv['y']:
@@ -132,7 +130,6 @@ def main(stdscr):
             tick_counter = 0
             reverse_and_drop = False
             
-            # Inspect boundary contacts across the active matrix width
             for inv in active_invaders:
                 spr_len = len(inv['sprite'])
                 if (inv_dir == 1 and inv['x'] + spr_len >= max_x - 2) or (inv_dir == -1 and inv['x'] <= 2):
@@ -143,7 +140,6 @@ def main(stdscr):
                 inv_dir *= -1
                 for inv in active_invaders:
                     inv['y'] += 1
-                    # Invaders breached the defensive floor profile
                     if inv['y'] >= player_y:
                         game_over = True
             else:

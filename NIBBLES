@@ -10,20 +10,19 @@ def main(stdscr):
     curses.init_pair(2, curses.COLOR_WHITE, curses.COLOR_BLUE)  # White text accents
     stdscr.bkgd(' ', curses.color_pair(1))
     
-    # Game Speed: lower number = faster game (milliseconds per frame)
     stdscr.timeout(100)  
     stdscr.keypad(True)
     curses.curs_set(0)
 
     max_y, max_x = stdscr.getmaxyx()
 
-    # Define Game Boundaries (leaving room for HUD)
+    # Define Game Boundaries
     min_y = 3
     min_x = 1
     max_y = max_y - 2
     max_x = max_x - 2
 
-    # Initialize Snake (Starting in the middle moving right)
+    # Initialize Snake
     snake = [
         [max_y // 2, max_x // 2],
         [max_y // 2, (max_x // 2) - 1],
@@ -31,14 +30,14 @@ def main(stdscr):
     ]
     direction = curses.KEY_RIGHT
 
-    # Spawn First Food item
     food = [random.randint(min_y, max_y), random.randint(min_x, max_x)]
     
     score = 0
     game_over = False
 
     while True:
-        stdscr.clear()
+        # FIX: Changed from clear() to erase() to completely eliminate flicker
+        stdscr.erase()
         max_y, max_x = stdscr.getmaxyx()
         
         # Redraw HUD layout
@@ -61,7 +60,7 @@ def main(stdscr):
         # Draw Food Asset (*)
         stdscr.addstr(food[0], food[1], "*", curses.color_pair(2))
 
-        # Draw Snake Segments (O for head, o for body)
+        # Draw Snake Segments
         for idx, segment in enumerate(snake):
             if min_y <= segment[0] <= max_y and min_x <= segment[1] <= max_x:
                 char = "O" if idx == 0 else "o"
@@ -74,7 +73,6 @@ def main(stdscr):
         if ch in (ord('q'), ord('Q')):
             break
         elif ch in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT):
-            # Prevent reversing directly into yourself
             if (ch == curses.KEY_UP and direction != curses.KEY_DOWN) or \
                (ch == curses.KEY_DOWN and direction != curses.KEY_UP) or \
                (ch == curses.KEY_LEFT and direction != curses.KEY_RIGHT) or \
@@ -98,13 +96,11 @@ def main(stdscr):
         # Check Food Collision
         if head[0] == food[0] and head[1] == food[1]:
             score += 100
-            # Respawn Food safely away from the snake body
             while True:
                 food = [random.randint(min_y, max_y - 1), random.randint(min_x, max_x - 1)]
                 if food not in snake:
                     break
         else:
-            # Pop Tail if no food eaten to simulate moving forward
             snake.pop()
 
         # Check Wall Collisions or Self-Eating Collisions
