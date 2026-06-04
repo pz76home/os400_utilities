@@ -46,8 +46,15 @@ def main(stdscr):
         max_y, max_x = stdscr.getmaxyx()
         player_y = max_y - 3
 
-        # Render C64 Status HUD
-        stdscr.addstr(1, 2, f"SCORE: {score:05d}    GALAXY INVADERS V1.0    READY.", curses.color_pair(1))
+        # Render C64 Status HUD with the Quit Hint
+        hud_left = f"SCORE: {score:05d}    GALAXY INVADERS V1.0"
+        hud_right = "PRESS Q TO QUIT"
+        
+        stdscr.addstr(1, 2, hud_left, curses.color_pair(1))
+        # Safely right-align the quit reminder if the screen is wide enough
+        if max_x > len(hud_left) + len(hud_right) + 6:
+            stdscr.addstr(1, max_x - len(hud_right) - 2, hud_right, curses.color_pair(1))
+            
         stdscr.addstr(2, 2, "=" * (max_x - 4), curses.color_pair(1))
 
         # Check Game State Screens
