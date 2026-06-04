@@ -21,8 +21,6 @@ Also WRKSBMJOB is a good way to also clean up your output (SPOOL) files and clea
 
 (Experimental C64sys) RUN bash scripts and python in the current directory, commands include DIR, LOAD, LIST, RUN and NEW. Also included games INVADERS and NIBBLES  
 
-![alt text](image.png)
-
 This was vibe coded with Google Gemini with alot of prompting and testing to get this to the now working functionality. 
 
 # 1. Create the system-wide framework directories
