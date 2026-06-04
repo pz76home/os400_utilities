@@ -58,7 +58,7 @@ def execute_program(filename, run_args, history_lines, stdscr):
         return
 
     # Determine runtime wrapper
-    cmd = [f"./{filename}"] if missing_shebang(filename) else [filename]
+    cmd = [f"./{filename}"]
     if filename.endswith(".sh"):
         cmd = ["bash", filename]
         
