@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+import curses
+import sys
+
+def main(stdscr):
+    # Establish C64 Video Profiles (Cyan Text on Blue Canvas)
+    curses.start_color()
+    curses.init_pair(1, curses.COLOR_CYAN, curses.COLOR_BLUE)
+    curses.init_pair(2, curses.COLOR_WHITE, curses.COLOR_BLUE)  # White text accents
+    stdscr.bkgd(' ', curses.color_pair(1))
+    stdscr.timeout(40)  # Game tick update interval (40ms loop)
+    stdscr.keypad(True)
+    curses.curs_set(0)  # Extinguish terminal cursor line
+
+    max_y, max_x = stdscr.getmaxyx()
+    
+    # Player Settings
+    player_sprite = "<▲>"
+    player_width = len(player_sprite)
+    player_x = max_x // 2
+    player_y = max_y - 3
+
+    # Invader Fleet Matrix Settings
+    invader_types = [" [X_X] ", " [O_O] ", " [*_*] "]
+    invaders = []
+    for row in range(3):
+        for col in range(6):
+            invaders.append({
+                'x': col * 10 + 10,
+                'y': row * 2 + 4,
+                'sprite': invader_types[row],
+                'alive': True
+            })
+    
+    inv_dir = 1
+    inv_speed_ticks = 12  # Enemy moves every X loop ticks
+    tick_counter = 0
+
+    lasers = []
+    score = 0
+    game_over = False
+    victory = False
+
+    while True:
+        stdscr.clear()
+        max_y, max_x = stdscr.getmaxyx()
+        player_y = max_y - 3
+
+        # Render C64 Status HUD
+        stdscr.addstr(1, 2, f"SCORE: {score:05d}    GALAXY INVADERS V1.0    READY.", curses.color_pair(1))
+        stdscr.addstr(2, 2, "=" * (max_x - 4), curses.color_pair(1))
+
+        # Check Game State Screens
+        if game_over:
+            msg = "**** GAME OVER ****"
+            stdscr.addstr(max_y // 2, (max_x - len(msg)) // 2, msg, curses.color_pair(2) | curses.A_BLINK)
+            stdscr.addstr(max_y // 2 + 2, (max_x - 26) // 2, "PRESS ANY KEY TO RETURN", curses.color_pair(1))
+            stdscr.nodelay(False)
+            stdscr.getch()
+            break
+
+        if victory:
+            msg = "**** VICTORY! ALL INVADERS DESTROYED ****"
+            stdscr.addstr(max_y // 2, (max_x - len(msg)) // 2, msg, curses.color_pair(2) | curses.A_BLINK)
+            stdscr.addstr(max_y // 2 + 2, (max_x - 26) // 2, "PRESS ANY KEY TO RETURN", curses.color_pair(1))
+            stdscr.nodelay(False)
+            stdscr.getch()
+            break
+
+        # Draw Player
+        stdscr.addstr(player_y, player_x, player_sprite, curses.color_pair(2))
+
+        # Track and Render Invader Rows
+        active_invaders = [inv for inv in invaders if inv['alive']]
+        if not active_invaders:
+            victory = True
+            continue
+
+        for inv in active_invaders:
+            if inv['y'] < max_y and 0 <= inv['x'] < max_x - len(inv['sprite']):
+                stdscr.addstr(inv['y'], inv['x'], inv['sprite'], curses.color_pair(1))
+
+        # Render Projectile Lasers
+        for laser in lasers:
+            if 2 < laser['y'] < max_y:
+                stdscr.addstr(laser['y'], laser['x'], "|", curses.color_pair(2))
+
+        stdscr.refresh()
+
+        # Handle Immediate Keyboard Inputs
+        ch = stdscr.getch()
+        if ch in (ord('q'), ord('Q')):
+            break
+        elif ch == curses.KEY_LEFT:
+            if player_x > 2:
+                player_x -= 2
+        elif ch == curses.KEY_RIGHT:
+            if player_x < max_x - player_width - 2:
+                player_x += 2
+        elif ch == ord(' '):
+            # Enforce max 3 active beams on screen to prevent spamming
+            if len(lasers) < 3:
+                lasers.append({'x': player_x + player_width // 2, 'y': player_y - 1})
+
+        # Advance Laser Vectors & Perform Collision Sweeps
+        for laser in lasers[:]:
+            laser['y'] -= 1
+            if laser['y'] <= 2:
+                lasers.remove(laser)
+                continue
+            
+            # Cross-reference beam location against alive invaders
+            for inv in active_invaders:
+                spr_len = len(inv['sprite'])
+                if inv['x'] <= laser['x'] < inv['x'] + spr_len and laser['y'] == inv['y']:
+                    inv['alive'] = False
+                    if laser in lasers:
+                        lasers.remove(laser)
+                    score += 150
+                    break
+
+        # Advance Fleet Positions Over Time
+        tick_counter += 1
+        if tick_counter >= inv_speed_ticks:
+            tick_counter = 0
+            reverse_and_drop = False
+            
+            # Inspect boundary contacts across the active matrix width
+            for inv in active_invaders:
+                spr_len = len(inv['sprite'])
+                if (inv_dir == 1 and inv['x'] + spr_len >= max_x - 2) or (inv_dir == -1 and inv['x'] <= 2):
+                    reverse_and_drop = True
+                    break
+            
+            if reverse_and_drop:
+                inv_dir *= -1
+                for inv in active_invaders:
+                    inv['y'] += 1
+                    # Invaders breached the defensive floor profile
+                    if inv['y'] >= player_y:
+                        game_over = True
+            else:
+                for inv in active_invaders:
+                    inv['x'] += inv_dir
+
+if __name__ == "__main__":
+    try:
+        curses.wrapper(main)
+    except KeyboardInterrupt:
+        sys.exit(0)
