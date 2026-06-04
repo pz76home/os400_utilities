@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+import curses
+import random
+import sys
+
+def main(stdscr):
+    # Establish C64 Video Profiles (Cyan Text on Blue Canvas)
+    curses.start_color()
+    curses.init_pair(1, curses.COLOR_CYAN, curses.COLOR_BLUE)
+    curses.init_pair(2, curses.COLOR_WHITE, curses.COLOR_BLUE)  # White text accents
+    stdscr.bkgd(' ', curses.color_pair(1))
+    
+    # Game Speed: lower number = faster game (milliseconds per frame)
+    stdscr.timeout(100)  
+    stdscr.keypad(True)
+    curses.curs_set(0)
+
+    max_y, max_x = stdscr.getmaxyx()
+
+    # Define Game Boundaries (leaving room for HUD)
+    min_y = 3
+    min_x = 1
+    max_y = max_y - 2
+    max_x = max_x - 2
+
+    # Initialize Snake (Starting in the middle moving right)
+    snake = [
+        [max_y // 2, max_x // 2],
+        [max_y // 2, (max_x // 2) - 1],
+        [max_y // 2, (max_x // 2) - 2]
+    ]
+    direction = curses.KEY_RIGHT
+
+    # Spawn First Food item
+    food = [random.randint(min_y, max_y), random.randint(min_x, max_x)]
+    
+    score = 0
+    game_over = False
+
+    while True:
+        stdscr.clear()
+        max_y, max_x = stdscr.getmaxyx()
+        
+        # Redraw HUD layout
+        hud_left = f"SCORE: {score:05d}    C64 SNAKE V1.0"
+        hud_right = "PRESS Q TO QUIT"
+        stdscr.addstr(1, 2, hud_left, curses.color_pair(1))
+        if max_x > len(hud_left) + len(hud_right) + 6:
+            stdscr.addstr(1, max_x - len(hud_right) - 2, hud_right, curses.color_pair(1))
+        stdscr.addstr(2, 2, "=" * (max_x - 4), curses.color_pair(1))
+
+        # Check Loss Conditions
+        if game_over:
+            msg = "**** GAME OVER ****"
+            stdscr.addstr(max_y // 2, (max_x - len(msg)) // 2, msg, curses.color_pair(2) | curses.A_BLINK)
+            stdscr.addstr(max_y // 2 + 2, (max_x - 26) // 2, "PRESS ANY KEY TO RETURN", curses.color_pair(1))
+            stdscr.nodelay(False)
+            stdscr.getch()
+            break
+
+        # Draw Food Asset (*)
+        stdscr.addstr(food[0], food[1], "*", curses.color_pair(2))
+
+        # Draw Snake Segments (O for head, o for body)
+        for idx, segment in enumerate(snake):
+            if min_y <= segment[0] <= max_y and min_x <= segment[1] <= max_x:
+                char = "O" if idx == 0 else "o"
+                stdscr.addstr(segment[0], segment[1], char, curses.color_pair(1 if idx > 0 else 2))
+
+        stdscr.refresh()
+
+        # Handle Inputs
+        ch = stdscr.getch()
+        if ch in (ord('q'), ord('Q')):
+            break
+        elif ch in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT):
+            # Prevent reversing directly into yourself
+            if (ch == curses.KEY_UP and direction != curses.KEY_DOWN) or \
+               (ch == curses.KEY_DOWN and direction != curses.KEY_UP) or \
+               (ch == curses.KEY_LEFT and direction != curses.KEY_RIGHT) or \
+               (ch == curses.KEY_RIGHT and direction != curses.KEY_LEFT):
+                direction = ch
+
+        # Calculate New Head Coordinate Position
+        head = snake[0][:]
+        if direction == curses.KEY_UP:
+            head[0] -= 1
+        elif direction == curses.KEY_DOWN:
+            head[0] += 1
+        elif direction == curses.KEY_LEFT:
+            head[1] -= 1
+        elif direction == curses.KEY_RIGHT:
+            head[1] += 1
+
+        # Insert New Head
+        snake.insert(0, head)
+
+        # Check Food Collision
+        if head[0] == food[0] and head[1] == food[1]:
+            score += 100
+            # Respawn Food safely away from the snake body
+            while True:
+                food = [random.randint(min_y, max_y - 1), random.randint(min_x, max_x - 1)]
+                if food not in snake:
+                    break
+        else:
+            # Pop Tail if no food eaten to simulate moving forward
+            snake.pop()
+
+        # Check Wall Collisions or Self-Eating Collisions
+        if head[0] < min_y or head[0] >= max_y or head[1] < min_x or head[1] >= max_x or head in snake[1:]:
+            game_over = True
+
+if __name__ == "__main__":
+    try:
+        curses.wrapper(main)
+    except KeyboardInterrupt:
+        sys.exit(0)
