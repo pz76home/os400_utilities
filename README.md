@@ -19,7 +19,9 @@ Also WRKSBMJOB is a good way to also clean up your output (SPOOL) files and clea
 
 (Experimental Ansible Command) SBMABLJOB with no parameters/arguments will provide some examples.
 
-(Experimental C64sys) RUN bash scripts and python in the current directory, commands include DIR, LOAD, LIST, RUN and NEW. Also included games INVADERS and NIBBLES  
+(Experimental C64sys) RUN bash scripts and python in the current directory, commands include DIR, LOAD, LIST, RUN and NEW. Also included games INVADERS and NIBBLES.
+
+![alt text](image-1.png)
 
 This was vibe coded with Google Gemini with alot of prompting and testing to get this to the now working functionality. 
 
