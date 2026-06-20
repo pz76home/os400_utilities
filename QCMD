@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+import os
+import sys
+import curses
+import sqlite3
+import time
+import getpass
+import subprocess
+
+# System-wide global shared paths matching the SBMJOB architecture
+DB_PATH = "/var/lib/os400/qsys.db"
+SPOOL_DIR = "/var/lib/os400/splf"
+CURRENT_USER = getpass.getuser()
+
+def init_environment():
+    """Ensure the global OS/400 directories and database exist with correct permissions."""
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    os.makedirs(SPOOL_DIR, exist_ok=True)
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL;")
+    
+    # Create the master job tracking table if it doesn't exist yet
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS active_jobs (
+            job_number INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_name TEXT NOT NULL,
+            user TEXT NOT NULL,
+            pid INTEGER,
+            status TEXT NOT NULL,
+            command TEXT NOT NULL,
+            spool_file TEXT NOT NULL,
+            subsys TEXT NOT NULL DEFAULT 'QBATCH',
+            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def draw_qcmd_screen(stdscr, history_lines, current_input):
+    """Renders the standard Command Entry display layout."""
+    stdscr.clear()
+    height, width = stdscr.getmaxyx()
+    
+    # Header Layout
+    stdscr.addstr(0, 2, "Command Entry", curses.color_pair(1))
+    stdscr.addstr(0, width - 24, "OS400-LINUX SYSTEM", curses.color_pair(1))
+    
+    curr_time = time.strftime("%Y-%m-%d  %H:%M:%S")
+    stdscr.addstr(1, width - 24, curr_time, curses.color_pair(2))
+    stdscr.addstr(2, 2, f"User: {CURRENT_USER:<10}", curses.color_pair(1))
+    stdscr.hline(3, 0, '-', width)
+    
+    # Dynamic History Tracking Log Space
+    max_history_rows = height - 8
+    visible_history = history_lines[-max_history_rows:] if len(history_lines) > max_history_rows else history_lines
+    
+    for idx, line in enumerate(visible_history):
+        if idx < max_history_rows:
+            stdscr.addstr(4 + idx, 2, line[:width-4], curses.color_pair(2))
+            
+    # Command Entry Slot Layout
+    cmd_row = height - 3
+    stdscr.addstr(cmd_row - 1, 2, "Type command, press Enter.", curses.color_pair(1))
+    stdscr.addstr(cmd_row, 2, "===> ", curses.color_pair(1))
+    stdscr.addstr(cmd_row, 7, current_input[:width-9], curses.color_pair(2))
+    
+    # Bottom Function Key Legend Info
+    stdscr.addstr(height - 1, 2, "F3=Exit   F12=Cancel", curses.color_pair(1))
+    stdscr.refresh()
+
+def execute_interactive_command(stdscr, history_lines, cmd_str):
+    """Executes a command interactively and synchronously, updating the shared DB."""
+    history_lines.append(f"===> {cmd_str}")
+    draw_qcmd_screen(stdscr, history_lines, "")
+    
+    # 1. Parse an appropriate Job Name matching operating rules
+    tokens = cmd_str.split()
+    job_name = os.path.basename(tokens[0])[:10].upper() if tokens else "QCMD"
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # 2. Insert tracking state matching SBMJOB schema, using QINTER subsystem
+    cursor.execute("""
+        INSERT INTO active_jobs (job_name, user, pid, status, command, spool_file, subsys)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (job_name, CURRENT_USER, 0, '*RUNNING', cmd_str, '', 'QINTER'))
+    job_number = cursor.lastrowid
+    conn.commit()
+    
+    padded_job_num = f"{job_number:06d}"
+    spool_file_path = os.path.join(SPOOL_DIR, f"JOB_{padded_job_num}.txt")
+    
+    try:
+        spool_file = open(spool_file_path, "w")
+        try:
+            os.chmod(spool_file_path, 0o664)
+        except OSError:
+            pass
+            
+        # 3. Spawn process synchronously in-session with default nice value (0)
+        process = subprocess.Popen(
+            cmd_str,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
+        
+        pid = process.pid
+        
+        # Update database with the live process tracking identifiers
+        cursor.execute("""
+            UPDATE active_jobs 
+            SET pid = ?, spool_file = ? 
+            WHERE job_number = ?
+        """, (pid, spool_file_path, job_number))
+        conn.commit()
+        
+        # 4. Stream stdout/stderr line-by-line into the spool log file and terminal history
+        for line in process.stdout:
+            # Strip out nasty control escape sequences safely
+            clean_line = "".join(c for c in line if c.isprintable() or c.isspace()).rstrip('\n\r')
+            spool_file.write(line)
+            spool_file.flush()
+            
+            history_lines.append(clean_line)
+            draw_qcmd_screen(stdscr, history_lines, "")
+            
+        process.wait()
+        status = "*OUTQ"
+    except Exception as e:
+        status = "*ABEND"
+        history_lines.append(f"CPF1124: Job failed to start. Error: {e}")
+        draw_qcmd_screen(stdscr, history_lines, "")
+    finally:
+        # 5. Finalize the permanent job state record inside the shared database
+        cursor.execute("""
+            UPDATE active_jobs 
+            SET status = ? 
+            WHERE job_number = ?
+        """, (status, job_number))
+        conn.commit()
+        conn.close()
+        
+        if 'spool_file' in locals() and not spool_file.closed:
+            spool_file.close()
+            
+    history_lines.append(f"Job {padded_job_num} finished with status {status}.")
+    draw_qcmd_screen(stdscr, history_lines, "")
+
+def main_menu(stdscr):
+    # Initialize basic curses display layers
+    curses.start_color()
+    curses.use_default_colors()
+    curses.init_pair(1, curses.COLOR_GREEN, -1)   
+    curses.init_pair(2, curses.COLOR_WHITE, -1)   
+    
+    stdscr.keypad(True)
+    curses.curs_set(1)  # Ensure interactive command line cursor visibility is active
+    stdscr.timeout(-1)  # Completely block getch() to use 0% CPU while waiting for input
+    
+    history_lines = ["Log session initiated. Commands will register to QINTER."]
+    current_input = ""
+    
+    while True:
+        draw_qcmd_screen(stdscr, history_lines, current_input)
+        
+        # Explicitly position terminal cursor at end of input string
+        height, width = stdscr.getmaxyx()
+        cmd_row = height - 3
+        input_len = len(current_input)
+        stdscr.move(cmd_row, 7 + min(input_len, width - 10))
+        stdscr.refresh()
+        
+        ch = stdscr.getch()
+        
+        if ch in (curses.KEY_F3, curses.KEY_F12, 27): # F3, F12, or ESC
+            break
+        elif ch in (10, 13): # Enter key
+            if current_input.strip():
+                cmd_to_run = current_input
+                current_input = ""
+                execute_interactive_command(stdscr, history_lines, cmd_to_run)
+        elif ch in (curses.KEY_BACKSPACE, 127, 8):
+            if len(current_input) > 0:
+                current_input = current_input[:-1]
+        elif 32 <= ch <= 126: # Printable regular text input characters
+            current_input += chr(ch)
+
+if __name__ == "__main__":
+    try:
+        init_environment()
+        curses.wrapper(main_menu)
+    except KeyboardInterrupt:
+        sys.exit(0)

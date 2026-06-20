@@ -14,7 +14,7 @@ cpu_cache = {}
 def get_system_proc_snapshot():
     """
     Scans /proc exactly once per refresh cycle.
-    Returns a dictionary mapping: pid -> {'ppid': parent_pid, 'ticks': total_ticks}
+    Returns a dictionary mapping: pid -> {'ppid': parent_pid, 'ticks': total_ticks, 'nice': nice_value}
     """
     snapshot = {}
     try:
@@ -35,10 +35,12 @@ def get_system_proc_snapshot():
                     ppid = int(stat_line[1])       # Field 4 in raw stat
                     utime = float(stat_line[11])   # Field 14 in raw stat
                     stime = float(stat_line[12])   # Field 15 in raw stat
+                    nice = int(stat_line[16])      # Field 19 in raw stat (Nice priority)
                     
                     snapshot[pid] = {
                         'ppid': ppid,
-                        'ticks': utime + stime
+                        'ticks': utime + stime,
+                        'nice': nice
                     }
                 except (FileNotFoundError, PermissionError, IndexError, ValueError):
                     continue
@@ -110,21 +112,44 @@ def update_and_get_jobs():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    cursor.execute("""
-        SELECT job_number, job_name, user, pid, status, command 
-        FROM active_jobs 
-        WHERE status IN ('*RUNNING', '*JOBQ') 
-        ORDER BY job_number DESC
-    """)
-    jobs = cursor.fetchall()
+    # Defensive execution: Check if the 'subsys' field exists in the active schema
+    try:
+        cursor.execute("""
+            SELECT job_number, job_name, user, pid, status, command, subsys 
+            FROM active_jobs 
+            WHERE status IN ('*RUNNING', '*JOBQ') 
+            ORDER BY job_number DESC
+        """)
+        jobs = cursor.fetchall()
+        has_subsys_field = True
+    except sqlite3.OperationalError:
+        # Fallback query if DB migration has not run yet
+        cursor.execute("""
+            SELECT job_number, job_name, user, pid, status, command 
+            FROM active_jobs 
+            WHERE status IN ('*RUNNING', '*JOBQ') 
+            ORDER BY job_number DESC
+        """)
+        jobs = cursor.fetchall()
+        has_subsys_field = False
     
     updated_jobs = []
     for job in jobs:
-        job_num, job_name, user, pid, status, command = job
+        if has_subsys_field:
+            job_num, job_name, user, pid, status, command, subsys = job
+        else:
+            job_num, job_name, user, pid, status, command = job
+            subsys = "QBATCH"  # Safe backward-compatibility default
+            
         padded_num = f"{job_num:06d}"
         cpu = 0.0
+        pty = 0  # Default priority fallback for non-running status elements
         
         if status == '*RUNNING' and pid > 0:
+            # Extract live priority from single-pass snapshot mapping
+            if pid in proc_snapshot:
+                pty = proc_snapshot[pid]['nice']
+                
             try:
                 os.kill(pid, 0) # Confirm if process or parent container is alive
                 cpu = get_cpu_usage(pid, proc_snapshot)
@@ -141,7 +166,7 @@ def update_and_get_jobs():
                     status = '*OUTQ'
                     cursor.execute("UPDATE active_jobs SET status = '*OUTQ' WHERE job_number = ?", (job_num,))
                     conn.commit()
-                
+             
         if status in ('*RUNNING', '*JOBQ'):
             updated_jobs.append({
                 'num': padded_num,
@@ -151,6 +176,8 @@ def update_and_get_jobs():
                 'pid': pid,
                 'status': status,
                 'cpu': cpu,
+                'pty': pty,
+                'subsys': subsys,
                 'cmd': command
             })
             
@@ -277,7 +304,8 @@ def draw_screen(stdscr):
         stdscr.addstr(4, 2, "Type options, press Enter.", curses.color_pair(1))
         stdscr.addstr(5, 4, "4=End job   5=Work with spool file", curses.color_pair(4))
         
-        stdscr.addstr(7, 2, "Opt  Job/Subsys  User        Type    CPU %  Status    Command", curses.color_pair(1))
+        # Optimized layout splits 'Job' and 'Subsys' into clean columns
+        stdscr.addstr(7, 2, "Opt  Job      Subsys  User      Type Pty  CPU % Status     Command", curses.color_pair(1))
         stdscr.hline(8, 0, '-', width)
         
         # Subfile Pagination Indicators
@@ -299,12 +327,19 @@ def draw_screen(stdscr):
             if opt_val:
                 stdscr.addstr(row, 3, opt_val, curses.color_pair(2))
                 
-            stdscr.addstr(row, 7, f"{job['name'][:10]:12}", curses.color_pair(2))
-            stdscr.addstr(row, 20, f"{job['user'][:10]:12}", curses.color_pair(2))
-            stdscr.addstr(row, 34, "BCH", curses.color_pair(4))
-            stdscr.addstr(row, 42, f"{job['cpu']:5.1f}", curses.color_pair(2))
-            stdscr.addstr(row, 49, f"{job['status']:10}", curses.color_pair(1 if job['status'] == '*RUNNING' else 2))
-            stdscr.addstr(row, 59, f"{job['cmd'][:width-61]}", curses.color_pair(2))
+            # Compact layout padding keeping text readable on narrow terminal frames
+            stdscr.addstr(row, 7, f"{job['name'][:8]:9}", curses.color_pair(2))
+            stdscr.addstr(row, 17, f"{job['subsys'][:6]:7}", curses.color_pair(2)) # Subsys output mapping
+            stdscr.addstr(row, 25, f"{job['user'][:8]:9}", curses.color_pair(2))
+            
+            # Conditional Logic: Show INT for QINTER sessions, BCH for batch jobs
+            job_type = "INT" if "QINTER" in job['subsys'].upper() else "BCH"
+            stdscr.addstr(row, 35, job_type, curses.color_pair(4))
+            
+            stdscr.addstr(row, 40, f"{job['pty']:3}", curses.color_pair(2)) 
+            stdscr.addstr(row, 45, f"{job['cpu']:5.1f}", curses.color_pair(2)) 
+            stdscr.addstr(row, 52, f"{job['status']:10}", curses.color_pair(1 if job['status'] == '*RUNNING' else 2)) 
+            stdscr.addstr(row, 64, f"{job['cmd'][:width-66]}", curses.color_pair(2)) 
             
             if absolute_idx == current_row_idx:
                 cursor_coords = (row, 3)
@@ -313,7 +348,7 @@ def draw_screen(stdscr):
             
         if error_msg:
             stdscr.addstr(height - 3, 2, error_msg, curses.color_pair(3))
-            
+         
         legend_str = "F3=Exit   F5=Refresh   F12=Cancel   PageUp/Dn=Roll"
         stdscr.addstr(height - 2, 2, legend_str, curses.color_pair(1))
         
@@ -321,7 +356,7 @@ def draw_screen(stdscr):
             stdscr.move(cursor_coords[0], cursor_coords[1])
         else:
             stdscr.move(height - 2, 2)
-            
+             
         stdscr.refresh()
         ch = stdscr.getch()
         

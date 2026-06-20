@@ -23,7 +23,7 @@ def init_environment():
     # Enable WAL mode to allow concurrent multi-user reads/writes without locking
     cursor.execute("PRAGMA journal_mode=WAL;")
     
-    # Create the global master job tracking table
+    # Create the global master job tracking table (Updated with 'subsys' field)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS active_jobs (
             job_number INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,11 +33,21 @@ def init_environment():
             status TEXT NOT NULL,
             command TEXT NOT NULL,
             spool_file TEXT NOT NULL,
+            subsys TEXT NOT NULL DEFAULT 'QBATCH',
             submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    
+    # Schema Migration Step: Safe ALTER TABLE if the database table already exists
+    try:
+        cursor.execute("ALTER TABLE active_jobs ADD COLUMN subsys TEXT NOT NULL DEFAULT 'QBATCH';")
+    except sqlite3.OperationalError:
+        # Column already exists, safe to ignore
+        pass
+        
     conn.commit()
-        # Check and fix group permissions on the database file to ensure RWX (mode 7)
+    
+    # Check and fix group permissions on the database file to ensure RWX (mode 7)
     try:
         stat_info = os.stat(DB_PATH)
         current_mode = stat_info.st_mode
@@ -72,12 +82,12 @@ def submit_job(job_name, cmd_str):
     """Forks the command, detaches it as a daemon, and logs it globally."""
     username = getpass.getuser()
     
-    # 1. Insert placeholder to claim a unique, global auto-incremented Job Number
+    # 1. Insert placeholder to claim a unique, global auto-incremented Job Number (Updated with 'QBATCH')
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO active_jobs (job_name, user, pid, status, command, spool_file) VALUES (?, ?, ?, ?, ?, ?)",
-        (job_name, username, 0, '*JOBQ', cmd_str, '')
+        "INSERT INTO active_jobs (job_name, user, pid, status, command, spool_file, subsys) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (job_name, username, 0, '*JOBQ', cmd_str, '', 'QBATCH')
     )
     job_number = cursor.lastrowid
     padded_job_num = f"{job_number:06d}"
@@ -100,7 +110,8 @@ def submit_job(job_name, cmd_str):
             shell=True,
             stdout=spool_file,
             stderr=subprocess.STDOUT,
-            start_new_session=True  # Detaches process group from current terminal
+            start_new_session=True,  # Detaches process group from current terminal
+            preexec_fn=lambda: os.nice(10)  # Set nice value to 10 for lower priority
         )
         
         pid = process.pid

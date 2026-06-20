@@ -1,0 +1,277 @@
+#!/usr/bin/env python3
+import os
+import sys
+import curses
+import sqlite3
+import time
+import getpass
+import subprocess
+import re
+
+DB_PATH = "/var/lib/os400/qsys.db"
+SPOOL_DIR = "/var/lib/os400/splf"
+CURRENT_USER = getpass.getuser()
+
+FIELDS = [
+    {"label": "Playbook Path . . . . .", "key": "PLAYBOOK", "val": ""},
+    {"label": "Ansible Module . . . . .", "key": "MOD", "val": ""},
+    {"label": "Module Arguments . . . .", "key": "ARGS", "val": ""},
+    {"label": "Inventory File . . . . .", "key": "INV", "val": ""},
+    {"label": "Hosts / Target Limit . .", "key": "HOSTS", "val": ""},
+    {"label": "Use Become? (Y/N) . . .", "key": "BECOME", "val": "N"},
+    {"label": "Become Method . . . . .", "key": "BMETHOD", "val": "sudo"},
+    {"label": "Extra Env Variables . .", "key": "ENV", "val": ""},
+    {"label": "Ansible Extra Vars (-e) .", "key": "EXTVARS", "val": ""},
+    {"label": "Check / Dry Run? (Y/N) .", "key": "CHECK", "val": "N"},
+    {"label": "Vault ID String / Path .", "key": "VAULT", "val": ""},
+    {"label": "Private Key File Path .", "key": "KEY", "val": ""},
+    {"label": "Ask Vault Pass? (Y/N) . .", "key": "ASKVAULT", "val": "N"},
+    {"label": "Vault Password File . . .", "key": "VLTFILE", "val": ""},
+]
+
+def parse_cl_args(args_list):
+    """
+    Parses OS/400 Control Language syntax strings passed from bash shell.
+    Example: PLAYBOOK('/home/paulz/test.yaml') CHECK(Y)
+    Returns a dictionary of uppercase keywords and their sanitized values.
+    """
+    full_str = " ".join(args_list)
+    # Extract keywords and capture contents inside parentheses
+    matches = re.findall(r'(\w+)\((.*?)\)', full_str)
+    # Return mapping with internal single/double quotes stripped out
+    return {k.upper(): v.strip("'\"") for k, v in matches}
+
+def draw_prompt_screen(stdscr, current_field_idx, history_lines):
+    stdscr.clear()
+    height, width = stdscr.getmaxyx()
+
+    stdscr.addstr(0, 2, "Ansible Command Prompt Entry", curses.color_pair(1))
+    stdscr.addstr(0, width - 24, "OS400-LINUX SUBSYS", curses.color_pair(1))
+    stdscr.addstr(1, width - 24, time.strftime("%Y-%m-%d  %H:%M:%S"), curses.color_pair(2))
+    stdscr.addstr(2, 2, f"User: {CURRENT_USER:<10}", curses.color_pair(1))
+    stdscr.hline(3, 0, '-', width)
+
+    form_start_row = 4
+    for idx, field in enumerate(FIELDS):
+        stdscr.addstr(form_start_row + idx, 2, field["label"], curses.color_pair(1))
+        
+        if idx == current_field_idx:
+            stdscr.addstr(form_start_row + idx, 28, f" {field['val']:<40} ", curses.A_REVERSE | curses.color_pair(2))
+        else:
+            stdscr.addstr(form_start_row + idx, 29, f"{field['val']:<40}", curses.color_pair(2))
+
+    stdscr.hline(form_start_row + len(FIELDS) + 1, 0, '-', width)
+    
+    history_start_row = form_start_row + len(FIELDS) + 2
+    max_history_rows = height - history_start_row - 2
+    visible_history = history_lines[-max_history_rows:] if len(history_lines) > max_history_rows else history_lines
+
+    for idx, line in enumerate(visible_history):
+        if idx < max_history_rows:
+            stdscr.addstr(history_start_row + idx, 2, line[:width-4], curses.color_pair(2))
+
+    stdscr.addstr(height - 1, 2, "F3=Exit   F12=Cancel   Enter=Execute Playbook   Arrows=Navigate", curses.color_pair(1))
+    stdscr.refresh()
+
+def run_interactive_ansible(stdscr, history_lines):
+    params = {f["key"]: f["val"] for f in FIELDS}
+    
+    cmd_parts = []
+    if params["PLAYBOOK"]:
+        cmd_parts.append("ansible-playbook")
+        cmd_parts.append(params["PLAYBOOK"])
+    elif params["MOD"]:
+        cmd_parts.append("ansible")
+        cmd_parts.append(params["HOSTS"] if params["HOSTS"] else "all")
+        cmd_parts.extend(["-m", params["MOD"]])
+        if params["ARGS"]:
+            cmd_parts.extend(["-a", params["ARGS"]])
+    else:
+        history_lines.append("ERROR: Must supply either a Playbook Path or an Ansible Module.")
+        return
+
+    if params["INV"]:
+        cmd_parts.extend(["-i", params["INV"]])
+        if params["HOSTS"] and params["PLAYBOOK"]:
+            cmd_parts.extend(["--limit", params["HOSTS"]])
+    elif params["HOSTS"] and params["PLAYBOOK"]:
+        cmd_parts.extend(["-i", f"{params['HOSTS']},"])
+
+    if params["BECOME"].upper() in ("Y", "YES"):
+        cmd_parts.append("-b")
+        if params["BMETHOD"]:
+            cmd_parts.extend(["--become-method", params["BMETHOD"]])
+
+    if params["EXTVARS"]:
+        for item in params["EXTVARS"].split(","):
+            if item.strip():
+                cmd_parts.extend(["-e", f"'{item.strip()}'"])
+
+    if params["CHECK"].upper() in ("Y", "YES"):
+        cmd_parts.append("-C")
+
+    if params["VAULT"]:
+        cmd_parts.extend(["--vault-id", params["VAULT"]])
+
+    if params["KEY"]:
+        cmd_parts.extend(["--private-key", params["KEY"]])
+
+    if params["ASKVAULT"].upper() in ("Y", "YES"):
+        cmd_parts.append("--ask-vault-pass")
+
+    if params["VLTFILE"]:
+        cmd_parts.extend(["--vault-password-file", params["VLTFILE"]])
+
+    full_cmd = " ".join(cmd_parts)
+    history_lines.append(f"===> {full_cmd}")
+    
+    if params["PLAYBOOK"]:
+        job_name = re.sub(r'[^A-Z0-9]', '', os.path.basename(params["PLAYBOOK"]).split('.')[0].upper())[:10]
+    else:
+        job_name = f"ANS_{params['MOD']}"[:10].upper()
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO active_jobs (job_name, user, pid, status, command, spool_file, subsys)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (job_name, CURRENT_USER, 0, '*RUNNING', full_cmd, '', 'QINTER'))
+    job_number = cursor.lastrowid
+    conn.commit()
+
+    padded_job_num = f"{job_number:06d}"
+    spool_file_path = os.path.join(SPOOL_DIR, f"JOB_{padded_job_num}.txt")
+
+    try:
+        spool_file = open(spool_file_path, "w")
+        ansible_env = os.environ.copy()
+        ansible_env["PYTHONUNBUFFERED"] = "1"
+        ansible_env["ANSIBLE_FORCE_COLOR"] = "0"
+        
+        if params["ENV"]:
+            for item in params["ENV"].split(","):
+                if "=" in item:
+                    k, v = item.split("=", 1)
+                    k_upper = k.strip().upper() if k.strip().lower().startswith("ansible_") else k.strip()
+                    ansible_env[k_upper] = v.strip()
+
+        is_interactive_prompt = params["ASKVAULT"].upper() in ("Y", "YES")
+
+        process = subprocess.Popen(
+            full_cmd,
+            shell=True,
+            stdout=subprocess.PIPE if not is_interactive_prompt else None,
+            stderr=subprocess.STDOUT if not is_interactive_prompt else None,
+            text=True,
+            bufsize=1 if not is_interactive_prompt else -1,
+            env=ansible_env
+        )
+        
+        cursor.execute("UPDATE active_jobs SET pid = ?, spool_file = ? WHERE job_number = ?", (process.pid, spool_file_path, job_number))
+        conn.commit()
+
+        if not is_interactive_prompt:
+            for line in process.stdout:
+                clean_line = "".join(c for c in line if c.isprintable() or c.isspace()).rstrip('\n\r')
+                spool_file.write(line)
+                spool_file.flush()
+                history_lines.append(clean_line)
+                draw_prompt_screen(stdscr, -1, history_lines)
+            process.wait()
+        else:
+            curses.endwin()
+            process.wait()
+            stdscr = curses.initscr()
+            stdscr.refresh()
+            history_lines.append("[Interactive Terminal Session Returned to Control Unit Layout]")
+
+        status = "*OUTQ"
+    except Exception as e:
+        status = "*ABEND"
+        history_lines.append(f"Engine Failure: {e}")
+    finally:
+        cursor.execute("UPDATE active_jobs SET status = ? WHERE job_number = ?", (status, job_number))
+        conn.commit()
+        conn.close()
+        spool_file.close()
+
+    history_lines.append(f"Job {padded_job_num} finished with status {status}.")
+
+def main_menu(stdscr):
+    curses.start_color()
+    curses.use_default_colors()
+    curses.init_pair(1, curses.COLOR_GREEN, -1)   
+    curses.init_pair(2, curses.COLOR_WHITE, -1)   
+    stdscr.keypad(True)
+    
+    current_field_idx = 0
+    # Dynamic Tracking: Set to length of field val (handles text injected via CLI)
+    field_cursor_pos = len(FIELDS[current_field_idx]["val"])
+    history_lines = ["Ansible interactive shell environment initiated inside QINTER."]
+
+    while True:
+        draw_prompt_screen(stdscr, current_field_idx, history_lines)
+        
+        form_start_row = 4
+        stdscr.move(form_start_row + current_field_idx, 29 + field_cursor_pos)
+        stdscr.refresh()
+
+        ch = stdscr.getch()
+        if ch in (curses.KEY_F3, curses.KEY_F12, 27):
+            break
+        
+        # Vertical Navigation
+        elif ch == curses.KEY_UP:
+            current_field_idx = (current_field_idx - 1) % len(FIELDS)
+            field_cursor_pos = len(FIELDS[current_field_idx]["val"])
+        elif ch in (curses.KEY_DOWN, 9): 
+            current_field_idx = (current_field_idx + 1) % len(FIELDS)
+            field_cursor_pos = len(FIELDS[current_field_idx]["val"])
+            
+        # Horizontal Navigation
+        elif ch == curses.KEY_LEFT:
+            if field_cursor_pos > 0:
+                field_cursor_pos -= 1
+        elif ch == curses.KEY_RIGHT:
+            if field_cursor_pos < len(FIELDS[current_field_idx]["val"]):
+                field_cursor_pos += 1
+                
+        # Execution
+        elif ch in (10, 13): 
+            draw_prompt_screen(stdscr, -1, history_lines)
+            run_interactive_ansible(stdscr, history_lines)
+            field_cursor_pos = len(FIELDS[current_field_idx]["val"])
+            
+        # Deletion (Backspace)
+        elif ch in (curses.KEY_BACKSPACE, 127, 8):
+            curr_val = FIELDS[current_field_idx]["val"]
+            if field_cursor_pos > 0:
+                FIELDS[current_field_idx]["val"] = curr_val[:field_cursor_pos - 1] + curr_val[field_cursor_pos:]
+                field_cursor_pos -= 1
+                
+        # Deletion (Delete Key)
+        elif ch == curses.KEY_DC:
+            curr_val = FIELDS[current_field_idx]["val"]
+            if field_cursor_pos < len(curr_val):
+                FIELDS[current_field_idx]["val"] = curr_val[:field_cursor_pos] + curr_val[field_cursor_pos + 1:]
+                
+        # Character Insertion
+        elif 32 <= ch <= 126:
+            curr_val = FIELDS[current_field_idx]["val"]
+            if len(curr_val) < 38:
+                FIELDS[current_field_idx]["val"] = curr_val[:field_cursor_pos] + chr(ch) + curr_val[field_cursor_pos:]
+                field_cursor_pos += 1
+
+if __name__ == "__main__":
+    # 1. Parse custom argument inputs passed from the bash shell layout
+    cl_params = parse_cl_args(sys.argv[1:])
+    
+    # 2. Overwrite default field values with matches extracted from CLI tokens
+    for field in FIELDS:
+        if field["key"] in cl_params:
+            field["val"] = cl_params[field["key"]]
+            
+    try:
+        curses.wrapper(main_menu)
+    except KeyboardInterrupt:
+        sys.exit(0)
