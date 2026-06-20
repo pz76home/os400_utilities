@@ -1,4 +1,4 @@
-I AM ENCOURAGING EVERYONE TO CLONE OR COPY FROM THE DEVELOPMENT BRANCH AT THE MOMENT, IT'S MORE FEATURE RICH WITH A QCMD INTERFACE FOR QINTER INTERACTIVE JOBS. (The additional ABL Ansible commands are highly experimental at this point in time.)
+The additional ABL Ansible commands are highly experimental at this point in time.
 
 # What is this, you may ask?
 
@@ -70,14 +70,6 @@ If you want to run this with multiple concurrent users, you will have to run the
 sudo chmod -R 775 /var/lib/os400 
 
 sudo chmod g+s /var/lib/os400 /var/lib/os400/splf
-
-# Things I would like to do (The below is featured, mostly working and being tested in the development Branch)
-
-Create QCMD to have jobs run interactively, displaying as QINTER jobs in WRKACTJOB. (These would run at the OS default nice values)
-
-Have SBMJOB run the BATCH jobs at a lower nice value, though able to change the priority to renice the jobs
-
-The main challenge (I had with Ubuntu anyway) was the system limits on letting me renice my jobs. I will play with this when I have the time.
 
 # Disclaimer 
 
