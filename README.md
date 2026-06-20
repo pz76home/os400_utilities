@@ -60,7 +60,6 @@ SBMJOB 'CMD(ping -c 30 127.0.0.1) JOB(NETPING)'
 
 SBMJOB 'CMD(sha256sum /dev/zero) JOB(CPULOOP)'
 
-
 # Troubleshooting jobs submitted by SBMJOB 
 python3 -c "import sqlite3; conn=sqlite3.connect('/var/lib/os400/qsys.db'); c=conn.cursor(); c.execute('SELECT * FROM active_jobs'); print(c.fetchall())"
 
