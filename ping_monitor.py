@@ -27,6 +27,9 @@ def main(stdscr, host):
         bufsize=1
     )
 
+    last_packet_time = time.time()
+    last_timer_increment = time.time()
+
     try:
         while True:
             if stdscr.getch() == ord('q'):
@@ -46,6 +49,8 @@ def main(stdscr, host):
                     line_lower = line.lower()
                     if "icmp_seq=" in line_lower:
                         sent += 1
+                        last_packet_time = time.time()
+                        last_timer_increment = time.time()
                         if "time=" in line_lower:
                             received += 1
                         else:
@@ -53,6 +58,8 @@ def main(stdscr, host):
                     elif any(err in line_lower for err in ["timeout", "unreachable", "failed"]):
                         sent += 1
                         lost += 1
+                        last_packet_time = time.time()
+                        last_timer_increment = time.time()
 
             total_attempted = sent
             loss_pct = (lost / total_attempted * 100) if total_attempted > 0 else 0.0
@@ -83,7 +90,6 @@ def main(stdscr, host):
                 if filled > bar_width: filled = bar_width
                 bar_str = "|" + ("#" * filled) + ("-" * (bar_width - filled)) + "|"
                 stdscr.addstr(8, 2, bar_str)
-                stdscr.addstr(9, 2, " [Higher is Worse]".ljust(w-4), curses.A_DIM)
 
             stdscr.addstr(h-2, 0, " ═══ Monitor active ═══ ".center(w), curses.A_DIM)
             stdscr.refresh()
