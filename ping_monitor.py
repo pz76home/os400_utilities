@@ -16,6 +16,7 @@ def main(stdscr, host):
     curses.init_pair(3, curses.COLOR_RED, curses.COLOR_BLACK)
 
     received = 0
+    explicit_lost = 0
     start_time = time.time()
 
     # Start ping: -i 1 means one packet per second
@@ -37,7 +38,6 @@ def main(stdscr, host):
             # 2. Check if process died
             status = process.poll()
             if status is not None:
-                # If ping exits (e.g. network down), break to stop monitoring
                 break
 
             # 3. Read output (Non-blocking)
@@ -49,17 +49,18 @@ def main(stdscr, host):
                     if "icmp_seq=" in line_lower:
                         if "time=" in line_lower:
                             received += 1
+                        elif any(err in line_lower for err in ["timeout", "unreachable", "failed"]):
+                            explicit_lost += 1
 
             # 4. Calculate Stats based on TIME (Robustness Fix)
             elapsed = time.time() - start_time
-            # We assume 1 packet per second based on ping -i 1
-            sent = int(elapsed) 
+            sent = max(1, int(elapsed))
             
-            if sent <= 0:
-                sent = 1
-                
-            lost = max(0, sent - received)
-            loss_pct = (lost / sent * 100) if sent > 0 else 0.0
+            # The Absolute Loss Counter:
+            # We take the higher of (explicitly seen errors) or (the total deficit).
+            # This prevents the loss count from decreasing when the connection returns.
+            loss_count = max(explicit_lost, sent - received)
+            loss_pct = (loss_count / sent * 100) if sent > 0 else 0.0
             
             # 5. Render UI
             stdscr.erase()
@@ -71,29 +72,30 @@ def main(stdscr, host):
             
             # Stats
             stdscr.addstr(3, 2, f" Time Elapsed:     {elapsed:.1f}s".ljust(w-4))
-            stdscr.addstr(4, 2, f" Packets Sent:     {sent}".ljust(w-4))
-            stdscr.addstr(5, 2, f" Packets Received: {received}".ljust(w-4))
+            stdscr.addstr(4, 2, f" Total Sent:       {sent}".ljust(w-4))
+            stdscr.addstr(5, 2, f" Total Received:   {received}".ljust(w-4))
+            stdscr.addstr(6, 2, f" Total Lost (Abs):  {loss_count}".ljust(w-4))
             
             # Loss and Color
             if loss_pct == 0:
                 attr = curses.color_pair(1)
-                msg = f" Packet Loss:      {loss_pct:.1f}%"
+                msg = f" Loss %:          {loss_pct:.1f}%"
             elif loss_pct < 15:
                 attr = curses.color_pair(2)
-                msg = f" Packet Loss:      {loss_pct:.1f}% (Warning)"
+                msg = f" Loss %:          {loss_pct:.1f}% (Warning)"
             else:
                 attr = curses.color_pair(3)
-                msg = f" Packet Loss:      {loss_pct:.1f}% (CRITICAL!)"
+                msg = f" Loss %:          {loss_pct:.1f}% (CRITICAL!)"
                 
-            stdscr.addstr(7, 2, msg, attr)
+            stdscr.addstr(8, 2, msg, attr)
 
             # Progress Bar
             bar_width = w - 10
             if bar_width > 5:
-                filled = int((lost / sent) * bar_width) if sent > 0 else 0
+                filled = int((loss_pct / 100) * bar_width) if bar_width > 0 else 0
                 if filled > bar_width: filled = bar_width
                 bar_str = "|" + ("#" * filled) + ("-" * (bar_width - filled)) + "|"
-                stdscr.addstr(9, 2, bar_str)
+                stdscr.addstr(10, 2, bar_str)
 
             stdscr.addstr(h-2, 0, " ═══ Monitor active ═══ ".center(w), curses.A_DIM)
             stdscr.refresh()
