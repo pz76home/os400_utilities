@@ -6,6 +6,15 @@ import sqlite3
 import time
 import getpass
 import subprocess
+import termios
+import fcntl
+
+# Known curses-based utilities that require terminal ownership
+CURSES_COMMANDS = {
+    'WRKACTJOB', 'WRKSBMJOB', 'WRKUSRJOB', 'WRKJOB',
+    'DSPJOB', 'DSPUSRPRF', 'DSPLIBL', 'DSPFD',
+    'DSPDEV', 'WRKMBRPDM', 'WRKOBJ', 'WRKOBJL',
+}
 
 # System-wide global shared paths matching the SBMJOB architecture
 DB_PATH = "/var/lib/os400/qsys.db"
@@ -90,8 +99,62 @@ def execute_interactive_command(stdscr, history_lines, cmd_str):
     job_number = cursor.lastrowid
     conn.commit()
     
+    # 1. Detect if this is a curses-based utility
+    cmd_name = os.path.basename(tokens[0]).upper() if tokens else ""
+    is_curses_cmd = cmd_name in CURSES_COMMANDS
+    
+    if is_curses_cmd:
+        # Exit curses mode COMPLETELY before running child curses program.
+        # Critical order: nocbreak() MUST come before endwin()
+        curses.nocbreak()
+        curses.echo()
+        curses.endwin()
+        os.system('stty sane')
+        
+        status = "*COMPLETED"
+        try:
+            # Curses programs need direct terminal access - no capture_output
+            result = subprocess.run(cmd_str, shell=True)
+            status = "*COMPLETED" if result.returncode == 0 else "*FAILED"
+            if result.returncode != 0:
+                history_lines.append(f"WRKACTJOB exited with return code {result.returncode}")
+        except KeyboardInterrupt:
+            status = "*INTERRUPT"
+            history_lines.append("CPF1125: Job interrupted by user (Ctrl-C).")
+        except Exception as e:
+            status = "*ABEND"
+            history_lines.append(f"CPF1124: Job failed to start. Error: {e}")
+        finally:
+            # Update DB
+            cursor.execute("""
+                UPDATE active_jobs 
+                SET status = ? 
+                WHERE job_number = ?
+            """, (status, job_number))
+            conn.commit()
+            conn.close()
+            
+            padded_job_num = f"{job_number:06d}"
+            history_lines.append(f"Job {padded_job_num} finished with status {status}.")
+            
+            # Re-initialize curses and restore QCMD display
+            curses.initscr()
+            curses.cbreak()
+            curses.echo()
+            stdscr.keypad(True)
+            curses.curs_set(1)
+            draw_qcmd_screen(stdscr, history_lines, "")
+            curses.doupdate()
+        return
+    
     padded_job_num = f"{job_number:06d}"
     spool_file_path = os.path.join(SPOOL_DIR, f"JOB_{padded_job_num}.txt")
+    
+    # Initialize ALL variables that will be referenced in finally / after block
+    # so they are always defined regardless of which exception path is taken
+    spool_file = None
+    process = None
+    status = '*RUNNING'  # Default safe value for finally block
     
     try:
         spool_file = open(spool_file_path, "w")
@@ -132,12 +195,29 @@ def execute_interactive_command(stdscr, history_lines, cmd_str):
             
         process.wait()
         status = "*OUTQ"
+        
+    except KeyboardInterrupt:
+        # KeyboardInterrupt inherits from BaseException, NOT Exception, so it must
+        # be caught separately. Gracefully terminate the subprocess to avoid orphans.
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        status = "*INTERRUPT"
+        history_lines.append("CPF1125: Job interrupted by user (Ctrl-C).")
+        draw_qcmd_screen(stdscr, history_lines, "")
+        
     except Exception as e:
         status = "*ABEND"
         history_lines.append(f"CPF1124: Job failed to start. Error: {e}")
         draw_qcmd_screen(stdscr, history_lines, "")
+        
     finally:
         # 5. Finalize the permanent job state record inside the shared database
+        # All variables (status, padded_job_num, spool_file) are guaranteed defined
         cursor.execute("""
             UPDATE active_jobs 
             SET status = ? 
@@ -146,11 +226,11 @@ def execute_interactive_command(stdscr, history_lines, cmd_str):
         conn.commit()
         conn.close()
         
-        if 'spool_file' in locals() and not spool_file.closed:
+        if spool_file is not None and not spool_file.closed:
             spool_file.close()
             
-    history_lines.append(f"Job {padded_job_num} finished with status {status}.")
-    draw_qcmd_screen(stdscr, history_lines, "")
+        history_lines.append(f"Job {padded_job_num} finished with status {status}.")
+        draw_qcmd_screen(stdscr, history_lines, "")
 
 def main_menu(stdscr):
     # Initialize basic curses display layers
